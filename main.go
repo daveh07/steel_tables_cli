@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
-	"unsafe"
 )
 
 // Color constants for Tokyo Midnight theme
@@ -213,6 +211,47 @@ func listJSONFilesStyled() {
 	}
 }
 
+// listJSONFilesStyledFullWidth displays available JSON files with full terminal width background
+func listJSONFilesStyledFullWidth() {
+	termWidth := getTerminalWidth()
+	files, err := os.ReadDir("data")
+	if err != nil {
+		errorLine := fmt.Sprintf("✗ Error reading data directory: %v", err)
+		fmt.Printf("%s%s%s%s%s\n", ColorBg, ColorError, errorLine,
+			strings.Repeat(" ", termWidth-len(errorLine)), ColorReset)
+		return
+	}
+
+	for i, file := range files {
+		if strings.HasSuffix(file.Name(), ".json") {
+			// Extract the identifying part (remove _PROPS.json)
+			displayName := file.Name()
+			if strings.HasSuffix(displayName, "_PROPS.json") {
+				displayName = strings.TrimSuffix(displayName, "_PROPS.json")
+			} else if strings.HasSuffix(displayName, ".json") {
+				displayName = strings.TrimSuffix(displayName, ".json")
+			}
+
+			// Create the line content
+			var line string
+			if i%2 == 0 {
+				line = fmt.Sprintf("  ● %s", displayName)
+			} else {
+				line = fmt.Sprintf("  ● %s", displayName)
+			}
+
+			// Alternate colors for better readability with full width background
+			if i%2 == 0 {
+				fmt.Printf("%s%s%s%s%s%s\n", ColorBg, ColorAccent, "  ● ", ColorTextBright, displayName,
+					strings.Repeat(" ", termWidth-len(line))+ColorReset)
+			} else {
+				fmt.Printf("%s%s%s%s%s%s\n", ColorBg, ColorBlue, "  ● ", ColorText, displayName,
+					strings.Repeat(" ", termWidth-len(line))+ColorReset)
+			}
+		}
+	}
+}
+
 func displayTable(filePath string) {
 	// Set terminal to raw mode for immediate key reading
 	oldState := setRawMode()
@@ -330,8 +369,11 @@ func displayTable(filePath string) {
 		{"Type", func(p SteelProperty) string { return formatInterface(p.Type) }},
 	}
 
+	// Filter out empty columns dynamically
+	availableColumns := filterAvailableColumns(allColumns, properties)
+
 	currentPage := 0
-	maxCols := 11 // 11 additional columns + Section = 12 total
+	maxCols := 7 // 7 additional columns + Section = 8 total (adjusted for wider columns to fit all text)
 
 	for {
 		// Clear screen and set background
@@ -340,12 +382,12 @@ func displayTable(filePath string) {
 		// Calculate column range for current page
 		startCol := currentPage * maxCols
 		endCol := startCol + maxCols
-		if endCol > len(allColumns) {
-			endCol = len(allColumns)
+		if endCol > len(availableColumns) {
+			endCol = len(availableColumns)
 		}
 
-		currentColumns := allColumns[startCol:endCol]
-		totalPages := (len(allColumns) + maxCols - 1) / maxCols
+		currentColumns := availableColumns[startCol:endCol]
+		totalPages := (len(availableColumns) + maxCols - 1) / maxCols
 
 		// Beautiful header with accent colors
 		drawHeader(filepath.Base(filePath), currentPage+1, totalPages, len(properties))
@@ -355,6 +397,9 @@ func displayTable(filePath string) {
 
 		// Data rows with alternating colors
 		drawDataRows(properties, currentColumns)
+
+		// Fill any remaining vertical space with background color
+		fillRemainingSpace()
 
 		// Navigation footer
 		drawNavigationFooter(currentPage, totalPages)
@@ -394,6 +439,9 @@ func displayTable(filePath string) {
 				log.Fatal("Error parsing JSON:", err)
 			}
 
+			// Re-filter columns for the new dataset
+			availableColumns = filterAvailableColumns(allColumns, properties)
+
 			// Update file path and reset to first page
 			filePath = newFilePath
 			currentPage = 0
@@ -402,7 +450,7 @@ func displayTable(filePath string) {
 			oldState = setRawMode()
 			continue
 		case '>':
-			if endCol < len(allColumns) {
+			if endCol < len(availableColumns) {
 				currentPage++
 			}
 		case '<':
@@ -415,7 +463,7 @@ func displayTable(filePath string) {
 				if b2, ok := readKeyNonBlocking(); ok {
 					switch b2 {
 					case 67: // Right arrow
-						if endCol < len(allColumns) {
+						if endCol < len(availableColumns) {
 							currentPage++
 						}
 					case 68: // Left arrow
@@ -477,116 +525,172 @@ func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen-3] + "..."
-}
-
-func readKey() byte {
-	b := make([]byte, 1)
-	syscall.Syscall(syscall.SYS_READ, uintptr(0), uintptr(unsafe.Pointer(&b[0])), 1)
-	return b[0]
-}
-
-func readKeyNonBlocking() (byte, bool) {
-	b := make([]byte, 1)
-	n, _, _ := syscall.Syscall(syscall.SYS_READ, uintptr(0), uintptr(unsafe.Pointer(&b[0])), 1)
-	if n > 0 {
-		return b[0], true
+	// Very minimal truncation - allow almost all text to show
+	if maxLen <= 2 {
+		return s[:maxLen]
 	}
-	return 0, false
-}
-
-type termios struct {
-	Iflag  uint32
-	Oflag  uint32
-	Cflag  uint32
-	Lflag  uint32
-	Cc     [20]uint8
-	Ispeed uint32
-	Ospeed uint32
-}
-
-func setRawMode() *termios {
-	var oldState termios
-	syscall.Syscall(syscall.SYS_IOCTL, uintptr(0), uintptr(0x5401), uintptr(unsafe.Pointer(&oldState)))
-
-	newState := oldState
-	newState.Lflag &^= 0x0000000A // Disable ECHO and ICANON
-
-	syscall.Syscall(syscall.SYS_IOCTL, uintptr(0), uintptr(0x5402), uintptr(unsafe.Pointer(&newState)))
-	return &oldState
-}
-
-func restoreTerminal(oldState *termios) {
-	syscall.Syscall(syscall.SYS_IOCTL, uintptr(0), uintptr(0x5402), uintptr(unsafe.Pointer(oldState)))
+	return s[:maxLen-1] + "."
 }
 
 func drawHeader(filename string, currentPage, totalPages, totalEntries int) {
-	// Get actual terminal width and subtract margin for borders
-	termWidth := getTerminalWidth() - 4
-	if termWidth < 80 {
-		termWidth = 116 // Safe minimum
+	// Get actual terminal width for proper centering
+	termWidth := getTerminalWidth()
+	if termWidth < 100 {
+		termWidth = 150 // Wider minimum for better display
 	}
 
-	// Top border with background
-	fmt.Printf("%s%s╔%s╗%s\n", ColorBg, ColorBorderBright,
-		strings.Repeat("═", termWidth), ColorReset)
+	// Calculate box width based on content or minimum width
+	titleText := fmt.Sprintf("STEEL PROPERTIES: %s", strings.ToUpper(filename))
+	infoText := fmt.Sprintf("Page %d/%d │ %d entries │ 8 columns per page", currentPage, totalPages, totalEntries)
 
-	// Title row with full background
-	title := fmt.Sprintf("STEEL PROPERTIES: %s", strings.ToUpper(filename))
-	if len(title) > termWidth-4 {
-		title = title[:termWidth-7] + "..."
+	// Use the longer of the two texts to determine box width, with padding
+	boxWidth := len(titleText)
+	if len(infoText) > boxWidth {
+		boxWidth = len(infoText)
 	}
-	padding := (termWidth - len(title)) / 2
-	remainingPadding := termWidth - len(title) - padding
+	boxWidth += 8 // Add padding
 
-	fmt.Printf("%s%s║%s", ColorBg, ColorBorderBright, ColorBg)
-	fmt.Printf("%s", strings.Repeat(" ", padding))
-	fmt.Printf("%s%s%s", ColorAccent, title, ColorBg)
-	fmt.Printf("%s", strings.Repeat(" ", remainingPadding))
+	// Ensure minimum width
+	if boxWidth < 80 {
+		boxWidth = 80
+	}
+
+	// Calculate centering offset for the entire box
+	centerOffset := (termWidth - boxWidth - 4) / 2 // -4 for borders
+	if centerOffset < 0 {
+		centerOffset = 0
+	}
+
+	// Top border with centering
+	fmt.Printf("%s%s%s╔%s╗%s\n", ColorBg, strings.Repeat(" ", centerOffset), ColorBorderBright,
+		strings.Repeat("═", boxWidth), ColorReset)
+
+	// Title row with centering
+	titlePadding := (boxWidth - len(titleText)) / 2
+	remainingTitlePadding := boxWidth - len(titleText) - titlePadding
+
+	fmt.Printf("%s%s%s║%s", ColorBg, strings.Repeat(" ", centerOffset), ColorBorderBright, ColorBg)
+	fmt.Printf("%s", strings.Repeat(" ", titlePadding))
+	fmt.Printf("%s%s%s", ColorAccent, titleText, ColorBg)
+	fmt.Printf("%s", strings.Repeat(" ", remainingTitlePadding))
 	fmt.Printf("%s║%s\n", ColorBorderBright, ColorReset)
 
-	// Info row with full background
-	info := fmt.Sprintf("Page %d/%d │ %d entries │ 12 columns per page", currentPage, totalPages, totalEntries)
-	if len(info) > termWidth-4 {
-		info = fmt.Sprintf("Page %d/%d │ %d entries", currentPage, totalPages, totalEntries)
-	}
-	infoPadding := (termWidth - len(info)) / 2
-	remainingInfoPadding := termWidth - len(info) - infoPadding
+	// Info row with centering
+	infoPadding := (boxWidth - len(infoText)) / 2
+	remainingInfoPadding := boxWidth - len(infoText) - infoPadding
 
-	fmt.Printf("%s%s║%s", ColorBg, ColorBorderBright, ColorBg)
+	fmt.Printf("%s%s%s║%s", ColorBg, strings.Repeat(" ", centerOffset), ColorBorderBright, ColorBg)
 	fmt.Printf("%s", strings.Repeat(" ", infoPadding))
-	fmt.Printf("%s%s%s", ColorTextDim, info, ColorBg)
+	fmt.Printf("%s%s%s", ColorTextDim, infoText, ColorBg)
 	fmt.Printf("%s", strings.Repeat(" ", remainingInfoPadding))
 	fmt.Printf("%s║%s\n", ColorBorderBright, ColorReset)
 
-	// Bottom border with background
-	fmt.Printf("%s%s╚%s╝%s\n\n", ColorBg, ColorBorderBright,
-		strings.Repeat("═", termWidth), ColorReset)
+	// Bottom border with centering
+	fmt.Printf("%s%s%s╚%s╝%s\n\n", ColorBg, strings.Repeat(" ", centerOffset), ColorBorderBright,
+		strings.Repeat("═", boxWidth), ColorReset)
 }
 
 func drawColumnHeaders(currentColumns []ColumnInfo) {
-	// Header background
+	termWidth := getTerminalWidth()
+
+	// Header background - fill entire terminal width
 	fmt.Printf("%s%s", ColorBgLight, ColorAccent)
 
-	// Section header (fixed column)
-	fmt.Printf("%-25s", "Section")
+	// Section header (fixed column) - wider for better readability
+	fmt.Printf("%-35s", "Section")
 
-	// Dynamic columns
+	// Dynamic columns with units - wider to fit full text
 	for _, col := range currentColumns {
-		fmt.Printf("%-10s", truncateString(col.Name, 9))
+		headerText := getColumnHeaderWithUnit(col.Name)
+		fmt.Printf("%-18s", truncateString(headerText, 17))
+	}
+
+	// Fill remaining space to terminal width
+	usedSpace := 35 + (len(currentColumns) * 18)
+	remainingSpace := termWidth - usedSpace
+	if remainingSpace > 0 {
+		fmt.Printf("%s", strings.Repeat(" ", remainingSpace))
 	}
 	fmt.Printf("%s\n", ColorReset)
 
-	// Header separator with accent color
-	fmt.Printf("%s", ColorBorderBright)
-	fmt.Print(strings.Repeat("─", 25))
+	// Header separator with accent color - fill entire terminal width
+	fmt.Printf("%s%s", ColorBgLight, ColorBorderBright)
+	fmt.Print(strings.Repeat("─", 35))
 	for range currentColumns {
-		fmt.Print(strings.Repeat("─", 10))
+		fmt.Print(strings.Repeat("─", 18))
+	}
+	// Fill remaining separator space
+	if remainingSpace > 0 {
+		fmt.Print(strings.Repeat("─", remainingSpace))
 	}
 	fmt.Printf("%s\n", ColorReset)
 }
 
+// getColumnHeaderWithUnit returns the column name with appropriate unit
+func getColumnHeaderWithUnit(columnName string) string {
+	unitMap := map[string]string{
+		"Grade":    "",
+		"Weight":   "(kg/m)",
+		"d":        "(mm)",
+		"bf":       "(mm)",
+		"tf":       "(mm)",
+		"tw":       "(mm)",
+		"r1":       "(mm)",
+		"d1":       "(mm)",
+		"tw__1":    "(mm)",
+		"tf__1":    "(mm)",
+		"Ag":       "(mm²)",
+		"Ix":       "(10³mm⁴)",
+		"Zx":       "(10³mm³)",
+		"Sx":       "(10³mm³)",
+		"rx":       "(mm)",
+		"Iy":       "(10³mm⁴)",
+		"Zy":       "(mm³)",
+		"Sy":       "(mm³)",
+		"ry":       "(mm)",
+		"J":        "(mm⁴)",
+		"Iw":       "(mm⁶)",
+		"flange":   "(mm)",
+		"web":      "(mm)",
+		"kf":       "",
+		"C,N,S":    "",
+		"Zex":      "(mm³)",
+		"C,N,S__1": "",
+		"Zey":      "(mm³)",
+		"2tf":      "",
+		"Zy5":      "(mm³)",
+		"TanAlpha": "",
+		"αb":       "",
+		"Fu":       "(MPa)",
+		"r2":       "(mm)",
+		"ZeyD":     "(mm³)",
+		"In":       "(10³mm⁴)",
+		"Ip":       "(10³mm⁴)",
+		"ZexC":     "(mm³)",
+		"x5":       "(mm)",
+		"y5":       "(mm)",
+		"nL":       "(mm)",
+		"pB":       "(mm)",
+		"pT":       "(mm)",
+		"Residual": "",
+		"Type":     "",
+		"ZeyL":     "(mm³)",
+		"ZyL":      "(mm³)",
+		"ZeyR":     "(mm³)",
+		"ZyR":      "(mm³)",
+		"xL":       "(mm)",
+		"Xo":       "(mm)",
+	}
+
+	if unit, exists := unitMap[columnName]; exists && unit != "" {
+		return columnName + unit
+	}
+	return columnName
+}
+
 func drawDataRows(properties []SteelProperty, currentColumns []ColumnInfo) {
+	termWidth := getTerminalWidth()
+
 	for i, prop := range properties {
 		// Alternate row colors for better readability
 		if i%2 == 0 {
@@ -595,33 +699,65 @@ func drawDataRows(properties []SteelProperty, currentColumns []ColumnInfo) {
 			fmt.Printf("%s", ColorBgLight) // Slightly lighter background
 		}
 
-		// Section column (always shown, highlighted)
+		// Section column (always shown, highlighted) - wider for better readability
 		cleanedSection := cleanSectionName(prop.Section)
-		fmt.Printf("%s%-25s%s", ColorTextBright, truncateString(cleanedSection, 24), ColorText)
+		fmt.Printf("%s%-35s%s", ColorTextBright, truncateString(cleanedSection, 34), ColorText)
 
-		// Data columns
+		// Data columns - wider to match headers
 		for _, col := range currentColumns {
 			value := col.Formatter(prop)
 
 			// Color coding for different value types
 			if value == "-" || value == "" {
-				fmt.Printf("%s%-10s", ColorTextDim, truncateString(value, 9))
+				fmt.Printf("%s%-18s", ColorTextDim, truncateString(value, 17))
 			} else {
-				fmt.Printf("%s%-10s", ColorText, truncateString(value, 9))
+				fmt.Printf("%s%-18s", ColorText, truncateString(value, 17))
 			}
+		}
+
+		// Fill remaining space to terminal width with background color
+		usedSpace := 35 + (len(currentColumns) * 18)
+		remainingSpace := termWidth - usedSpace
+		if remainingSpace > 0 {
+			fmt.Printf("%s", strings.Repeat(" ", remainingSpace))
 		}
 		fmt.Printf("%s\n", ColorReset)
 	}
 }
 
 func drawNavigationFooter(currentPage, totalPages int) {
+	termWidth := getTerminalWidth()
+
 	fmt.Printf("\n%s", ColorBg)
 
-	// Navigation bar with beautiful styling
-	fmt.Printf("%s╔", ColorBorder)
-	fmt.Print(strings.Repeat("═", 118))
-	fmt.Printf("╗%s\n", ColorReset)
+	// Calculate content for the navigation box
+	pageInfo := fmt.Sprintf("Page %d/%d", currentPage+1, totalPages)
 
+	// Calculate box width with padding - make it a reasonable size
+	contentLength := len("NAVIGATION: < or ← prev │ > or → next │ m Main Menu │ q quit ") + len(pageInfo)
+	boxWidth := contentLength + 6 // Add padding
+	if boxWidth < 84 {
+		boxWidth = 84 // Minimum width similar to title box
+	}
+
+	// Calculate centering offset
+	centerOffset := (termWidth - boxWidth - 2) / 2 // -2 for borders
+	if centerOffset < 0 {
+		centerOffset = 0
+	}
+
+	// Fill background before the navigation box
+	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+	fmt.Printf("%s╔%s╗", ColorBorder, strings.Repeat("═", boxWidth))
+	// Fill background after the navigation box
+	remainingSpace := termWidth - centerOffset - boxWidth - 2
+	if remainingSpace > 0 {
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
+	}
+	fmt.Printf("%s\n", ColorReset)
+
+	// Content row with centering
+	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
 	fmt.Printf("%s║%s ", ColorBorder, ColorBg)
 
 	// Navigation instructions with color coding
@@ -640,19 +776,31 @@ func drawNavigationFooter(currentPage, totalPages int) {
 	}
 
 	fmt.Printf("%sm%s %sMain Menu%s │ ", ColorAccent, ColorText, ColorTextDim, ColorText)
-	fmt.Printf("%sq%s %squit%s", ColorError, ColorText, ColorTextDim, ColorText)
+	fmt.Printf("%sq%s %squit%s %s%s%s", ColorError, ColorText, ColorTextDim, ColorText, ColorAccent, pageInfo, ColorText)
 
-	// Right-align page indicator
-	pageInfo := fmt.Sprintf("Page %d/%d", currentPage+1, totalPages)
-	remainingSpace := 118 - 95 - len(pageInfo) // Adjusted calculation for single line
-	if remainingSpace > 0 {
-		fmt.Printf("%s%s%s%s", strings.Repeat(" ", remainingSpace), ColorAccent, pageInfo, ColorText)
+	// Calculate padding to fill the box
+	usedContentSpace := contentLength + 1 // +1 for space after "NAVIGATION:"
+	contentPadding := boxWidth - usedContentSpace
+	if contentPadding > 0 {
+		fmt.Printf("%s", strings.Repeat(" ", contentPadding))
 	}
 
-	fmt.Printf(" %s║%s\n", ColorBorder, ColorReset)
-	fmt.Printf("%s╚", ColorBorder)
-	fmt.Print(strings.Repeat("═", 118))
-	fmt.Printf("╝%s\n", ColorReset)
+	fmt.Printf("%s║", ColorBorder)
+	if remainingSpace > 0 {
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
+	}
+	fmt.Printf("%s\n", ColorReset)
+
+	// Bottom border with centering
+	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+	fmt.Printf("%s╚%s╝", ColorBorder, strings.Repeat("═", boxWidth))
+	if remainingSpace > 0 {
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
+	}
+	fmt.Printf("%s\n", ColorReset)
+
+	// Fill final line to terminal width
+	fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", termWidth), ColorReset)
 }
 
 // getTerminalWidth returns the terminal width, defaulting to 120 if unable to detect
@@ -678,25 +826,73 @@ func getTerminalWidth() int {
 
 func printWelcomeScreenInteractive() string {
 	for {
+		termWidth := getTerminalWidth()
 		fmt.Print(ColorClear)
 
-		// Title with accent color
-		fmt.Printf("%s╔══════════════════════════════════════════════════════════════════════════════╗%s\n", ColorBorderBright, ColorReset)
-		fmt.Printf("%s║%s                              %sSTEEL TABLES VIEWER%s                             %s║%s\n", ColorBorderBright, ColorBg, ColorAccent, ColorBg, ColorBorderBright, ColorReset)
-		fmt.Printf("%s╚══════════════════════════════════════════════════════════════════════════════╝%s\n\n", ColorBorderBright, ColorReset)
+		// Fill entire screen with background color first
+		for i := 0; i < 30; i++ {
+			fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", termWidth), ColorReset)
+		}
 
-		// Available files section
-		fmt.Printf("%s%s▶ AVAILABLE STEEL TABLES:%s\n", ColorBg, ColorAccent, ColorReset)
-		listJSONFilesStyled()
+		// Move cursor back to top
+		fmt.Print("\033[H")
 
-		// Instructions
-		fmt.Printf("\n%s%s▶ INSTRUCTIONS:%s\n", ColorBg, ColorAccent, ColorReset)
-		fmt.Printf("%s  • Type the table name (e.g., %sPFC300%s, %sRHS450%s, %sUB350%s)\n", ColorBg, ColorSuccess, ColorText, ColorSuccess, ColorText, ColorSuccess, ColorText)
-		fmt.Printf("%s  • Type %sq%s or %squit%s to exit\n", ColorBg, ColorError, ColorText, ColorError, ColorText)
-		fmt.Printf("%s  • Press %sEnter%s to confirm your selection\n\n", ColorBg, ColorAccent, ColorText)
+		// Title with accent color - properly centered
+		titleBoxWidth := 80
+		centerOffset := (termWidth - titleBoxWidth) / 2
+		if centerOffset < 0 {
+			centerOffset = 0
+		}
 
-		// Input prompt
-		fmt.Printf("%s%s▶ SELECT TABLE:%s ", ColorBg, ColorAccent, ColorReset)
+		// Fill background before the title box
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+		fmt.Printf("%s╔══════════════════════════════════════════════════════════════════════════════╗", ColorBorderBright)
+		// Fill background after the title box
+		remainingSpace := termWidth - centerOffset - titleBoxWidth
+		if remainingSpace > 0 {
+			fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
+		}
+		fmt.Printf("%s\n", ColorReset)
+
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+		fmt.Printf("%s║%s                              %sSTEEL TABLES VIEWER%s                                %s║",
+			ColorBorderBright, ColorBg, ColorAccent, ColorBg, ColorBorderBright)
+		if remainingSpace > 0 {
+			fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
+		}
+		fmt.Printf("%s\n", ColorReset)
+
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+		fmt.Printf("%s╚══════════════════════════════════════════════════════════════════════════════╝", ColorBorderBright)
+		if remainingSpace > 0 {
+			fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
+		}
+		fmt.Printf("%s\n\n", ColorReset)
+
+		// Available files section with full width background
+		fmt.Printf("%s%s▶ AVAILABLE STEEL TABLES:%s%s\n", ColorBg, ColorAccent,
+			strings.Repeat(" ", termWidth-len("▶ AVAILABLE STEEL TABLES:")), ColorReset)
+		listJSONFilesStyledFullWidth()
+
+		// Instructions with full width background
+		fmt.Printf("\n%s%s▶ INSTRUCTIONS:%s%s\n", ColorBg, ColorAccent,
+			strings.Repeat(" ", termWidth-len("▶ INSTRUCTIONS:")), ColorReset)
+
+		line1 := "  • Type the table name (e.g., PFC300, RHS450, UB350)"
+		fmt.Printf("%s%s%s%s\n", ColorBg, line1,
+			strings.Repeat(" ", termWidth-len(line1)), ColorReset)
+
+		line2 := "  • Type q or quit to exit"
+		fmt.Printf("%s%s%s%s\n", ColorBg, line2,
+			strings.Repeat(" ", termWidth-len(line2)), ColorReset)
+
+		line3 := "  • Press Enter to confirm your selection"
+		fmt.Printf("%s%s%s%s\n\n", ColorBg, line3,
+			strings.Repeat(" ", termWidth-len(line3)), ColorReset)
+
+		// Input prompt with full width background
+		promptLine := "▶ SELECT TABLE: "
+		fmt.Printf("%s%s%s", ColorBg, ColorAccent, promptLine)
 		fmt.Printf("%s%s", ColorBg, ColorTextBright)
 
 		// Read user input
@@ -723,9 +919,14 @@ func printWelcomeScreenInteractive() string {
 			filename := input + "_PROPS.json"
 			return filename
 		} else {
-			// Show error and continue loop
-			fmt.Printf("\n%s%s✗ Table '%s' not found. Please try again...%s\n", ColorBg, ColorError, input, ColorReset)
-			fmt.Printf("%s%sPress Enter to continue...%s", ColorBg, ColorTextDim, ColorReset)
+			// Show error and continue loop with full width background
+			errorLine := fmt.Sprintf("✗ Table '%s' not found. Please try again...", input)
+			fmt.Printf("\n%s%s%s%s%s\n", ColorBg, ColorError, errorLine,
+				strings.Repeat(" ", termWidth-len(errorLine)), ColorReset)
+
+			continuePrompt := "Press Enter to continue..."
+			fmt.Printf("%s%s%s%s%s", ColorBg, ColorTextDim, continuePrompt,
+				strings.Repeat(" ", termWidth-len(continuePrompt)), ColorReset)
 			fmt.Scanln() // Wait for user to press Enter
 		}
 	}
@@ -747,4 +948,39 @@ func isValidTable(tableName string) bool {
 		}
 	}
 	return false
+}
+
+// fillRemainingSpace fills any remaining vertical space with background color
+func fillRemainingSpace() {
+	termWidth := getTerminalWidth()
+	// Add a few empty lines with full background color to fill remaining space
+	for i := 0; i < 3; i++ {
+		fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", termWidth), ColorReset)
+	}
+}
+
+// filterAvailableColumns removes columns that have no meaningful data
+func filterAvailableColumns(allColumns []ColumnInfo, properties []SteelProperty) []ColumnInfo {
+	var availableColumns []ColumnInfo
+
+	for _, col := range allColumns {
+		hasData := false
+
+		// Check if any row has meaningful data for this column
+		for _, prop := range properties {
+			value := col.Formatter(prop)
+			// Consider various "empty" representations
+			if value != "-" && value != "" && value != "0" && value != "0.0" && value != "0.00" && value != "0.000" {
+				hasData = true
+				break
+			}
+		}
+
+		// Only include columns that have at least some meaningful data
+		if hasData {
+			availableColumns = append(availableColumns, col)
+		}
+	}
+
+	return availableColumns
 }

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Steel Tables Viewer
+Comment=Interactive steel section property viewer
+Exec=bash -c 'cd "%k" && ./steel_tables; echo ""; echo "Program finished. Press Enter to close..."; read'
+Icon=utilities-terminal
+Terminal=true
+Categories=Development;Engineering;
+StartupNotify=false
