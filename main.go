@@ -31,7 +31,7 @@ const (
 	ColorBlue     = "\033[38;2;125;162;206m"                    // Blue #7da2ce
 
 	// Status colors
-	ColorSuccess = "\033[38;2;158;206;106m" // Green #9ece6a
+	ColorSuccess = "\033[38;2;102;232;236m" // Green rgb(102, 232, 236)
 	ColorWarning = "\033[38;2;255;158;100m" // Orange #ff9e64
 	ColorError   = "\033[38;2;247;118;142m" // Red #f7768e
 
@@ -67,7 +67,7 @@ type SteelProperty struct {
 	Sy      float64     `json:"Sy"`
 	Ry      float64     `json:"ry"`
 	J       float64     `json:"J"`
-	Iw      float64     `json:"Iw"`
+	Iw      interface{} `json:"Iw"`
 	Flange  interface{} `json:"flange"`
 	Web     interface{} `json:"web"`
 	Kf      interface{} `json:"kf"`
@@ -76,6 +76,24 @@ type SteelProperty struct {
 	CNS2    interface{} `json:"C,N,S__1"`
 	Zey     float64     `json:"Zey"`
 	TwoTf   interface{} `json:"2tf"`
+
+	// Additional fields for UA tables
+	Zy5      float64     `json:"Zy5"`
+	TanAlpha float64     `json:"Tan Alpha"`
+	AlphaB   interface{} `json:"αb"`
+	Fu       interface{} `json:"Fu"`
+	R2       interface{} `json:"r2"`
+	ZeyD     float64     `json:"ZeyD"`
+	In       float64     `json:"In"`
+	Ip       float64     `json:"Ip"`
+	ZexC     float64     `json:"ZexC"`
+	X5       interface{} `json:"x5"`
+	Y5       float64     `json:"y5"`
+	NL       float64     `json:"nL"`
+	PB       float64     `json:"pB"`
+	PT       interface{} `json:"pT"`
+	Residual string      `json:"Residual"`
+	Type     interface{} `json:"Type"`
 }
 
 func main() {
@@ -225,24 +243,91 @@ func displayTable(filePath string) {
 		{"tw__1", func(p SteelProperty) string { return formatInterface(p.Tw1) }},
 		{"tf__1", func(p SteelProperty) string { return formatInterface(p.Tf1) }},
 		{"Ag", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Ag) }},
-		{"Ix", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Ix) }},
-		{"Zx", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Zx) }},
+		{"Ix", func(p SteelProperty) string { return fmt.Sprintf("%.1f", p.Ix) }},
+		{"Zx", func(p SteelProperty) string { return fmt.Sprintf("%.1f", p.Zx) }},
 		{"Sx", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Sx) }},
 		{"rx", func(p SteelProperty) string { return fmt.Sprintf("%.1f", p.Rx) }},
-		{"Iy", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Iy) }},
-		{"Zy", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Zy) }},
-		{"Sy", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Sy) }},
+		{"Iy", func(p SteelProperty) string { return fmt.Sprintf("%.2f", p.Iy) }},
+		{"Zy", func(p SteelProperty) string { return fmt.Sprintf("%.1f", p.Zy) }},
+		{"Sy", func(p SteelProperty) string { return fmt.Sprintf("%.1f", p.Sy) }},
 		{"ry", func(p SteelProperty) string { return fmt.Sprintf("%.1f", p.Ry) }},
 		{"J", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.J) }},
-		{"Iw", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Iw) }},
+		{"Iw", func(p SteelProperty) string { return formatInterface(p.Iw) }},
 		{"flange", func(p SteelProperty) string { return formatInterface(p.Flange) }},
 		{"web", func(p SteelProperty) string { return formatInterface(p.Web) }},
 		{"kf", func(p SteelProperty) string { return formatInterface(p.Kf) }},
 		{"C,N,S", func(p SteelProperty) string { return formatInterface(p.CNS) }},
 		{"Zex", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Zex) }},
 		{"C,N,S__1", func(p SteelProperty) string { return formatInterface(p.CNS2) }},
-		{"Zey", func(p SteelProperty) string { return fmt.Sprintf("%.0f", p.Zey) }},
+		{"Zey", func(p SteelProperty) string { return fmt.Sprintf("%.1f", p.Zey) }},
 		{"2tf", func(p SteelProperty) string { return formatInterface(p.TwoTf) }},
+		// Additional UA-specific columns
+		{"Zy5", func(p SteelProperty) string {
+			if p.Zy5 == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%.1f", p.Zy5)
+		}},
+		{"TanAlpha", func(p SteelProperty) string {
+			if p.TanAlpha == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%.3f", p.TanAlpha)
+		}},
+		{"αb", func(p SteelProperty) string { return formatInterface(p.AlphaB) }},
+		{"Fu", func(p SteelProperty) string { return formatInterface(p.Fu) }},
+		{"r2", func(p SteelProperty) string { return formatInterface(p.R2) }},
+		{"ZeyD", func(p SteelProperty) string {
+			if p.ZeyD == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%.1f", p.ZeyD)
+		}},
+		{"In", func(p SteelProperty) string {
+			if p.In == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%.2f", p.In)
+		}},
+		{"Ip", func(p SteelProperty) string {
+			if p.Ip == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%.2f", p.Ip)
+		}},
+		{"ZexC", func(p SteelProperty) string {
+			if p.ZexC == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%.0f", p.ZexC)
+		}},
+		{"x5", func(p SteelProperty) string { return formatInterface(p.X5) }},
+		{"y5", func(p SteelProperty) string {
+			if p.Y5 == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%.1f", p.Y5)
+		}},
+		{"nL", func(p SteelProperty) string {
+			if p.NL == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%.1f", p.NL)
+		}},
+		{"pB", func(p SteelProperty) string {
+			if p.PB == 0 {
+				return "-"
+			}
+			return fmt.Sprintf("%.1f", p.PB)
+		}},
+		{"pT", func(p SteelProperty) string { return formatInterface(p.PT) }},
+		{"Residual", func(p SteelProperty) string {
+			if p.Residual == "" {
+				return "-"
+			}
+			return p.Residual
+		}},
+		{"Type", func(p SteelProperty) string { return formatInterface(p.Type) }},
 	}
 
 	currentPage := 0
