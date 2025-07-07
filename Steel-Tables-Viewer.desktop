@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Steel Tables Viewer
+Comment=Interactive steel section property viewer for Australian steel standards
+Exec=bash -c 'cd "/home/david/Desktop/Programming/Go/steel_tables" && ./steel_tables_viewer; echo ""; echo "Program finished. Press Enter to close..."; read'
+Icon=utilities-terminal
+Terminal=true
+Categories=Development;Engineering;
+StartupNotify=false
+Path=/home/david/Desktop/Programming/Go/steel_tables

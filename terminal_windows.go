@@ -27,7 +27,7 @@ type termios struct {
 	// Dummy struct for Windows compatibility
 }
 
-func setRawMode() *termios {
+func setRawMode() error {
 	// Windows doesn't support raw mode in the same way
 	return nil
 }

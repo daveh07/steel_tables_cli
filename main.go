@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -9,7 +10,20 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+	"unsafe"
 )
+
+// Terminal functions are implemented in terminal_unix.go and terminal_windows.go
+
+// getTerminalState retrieves the current terminal attributes.
+func getTerminalState() (*termios, error) {
+	var state termios
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, os.Stdin.Fd(), uintptr(0x5401), uintptr(unsafe.Pointer(&state))); errno != 0 {
+		return nil, errno
+	}
+	return &state, nil
+}
 
 // Color constants for Tokyo Midnight theme
 const (
@@ -24,25 +38,26 @@ const (
 	ColorTextBright = "\033[38;2;255;255;255m" // Bright white
 
 	// Accent colors
-	ColorAccent   = "\033[38;2;111;236;206m"                    // Your accent color #6fecce
-	ColorAccentBg = "\033[48;2;111;236;206m\033[38;2;26;27;38m" // Accent background
-	ColorBlue     = "\033[38;2;125;162;206m"                    // Blue #7da2ce
+	ColorAccent       = "\033[38;2;111;236;206m" // Your accent color #6fecce
+	ColorAccentBright = "\033[38;2;122;162;247m" // Bright accent #7aa2f7
+	ColorBlue         = "\033[38;2;125;162;206m" // Blue #7da2ce
 
 	// Status colors
 	ColorSuccess = "\033[38;2;102;232;236m" // Green rgb(102, 232, 236)
 	ColorWarning = "\033[38;2;255;158;100m" // Orange #ff9e64
-	ColorError   = "\033[38;2;247;118;142m" // Red #f7768e
+	ColorError   = "\033[38;2;247;118;142m" // Error red #f7768e
 
 	// Border colors
-	ColorBorder       = "\033[38;2;52;59;88m"    // Border #343b58
-	ColorBorderBright = "\033[38;2;111;236;206m" // Bright border (accent)
+	ColorBorder       = "\033[38;2;60;63;83m"    // Border color #3c3f53
+	ColorBorderBright = "\033[38;2;122;162;247m" // Bright border for focus
 
 	// Clear and positioning
 	ColorClear     = "\033[2J\033[H"
 	ColorClearLine = "\033[2K"
 )
 
-// SteelProperty represents a single steel property entry with all available fields
+// SteelProperty defines the structure for a single steel section property.
+// Note the use of interface{} for fields that might be numeric or string (like "-").
 type SteelProperty struct {
 	Section string      `json:"Section"`
 	Grade   int         `json:"Grade"`
@@ -69,9 +84,9 @@ type SteelProperty struct {
 	Flange  interface{} `json:"flange"`
 	Web     interface{} `json:"web"`
 	Kf      interface{} `json:"kf"`
-	CNS     interface{} `json:"C,N,S"`
+	CNS     interface{} `json:"-"` // Handled by custom unmarshaler
 	Zex     float64     `json:"Zex"`
-	CNS2    interface{} `json:"C,N,S__1"`
+	CNS2    interface{} `json:"-"` // Handled by custom unmarshaler
 	Zey     float64     `json:"Zey"`
 	TwoTf   interface{} `json:"2tf"`
 
@@ -94,124 +109,358 @@ type SteelProperty struct {
 	Type     interface{} `json:"Type"`
 }
 
-func main() {
-	// Set background color for the entire terminal
-	fmt.Print(ColorBg + ColorClear)
-	defer fmt.Print(ColorReset) // Reset colors when exiting
-
-	if len(os.Args) < 2 {
-		// Interactive mode - show menu and get user input
-		selectedFile := printWelcomeScreenInteractive()
-		if selectedFile == "" {
-			return // User chose to quit
-		}
-
-		filename := selectedFile
-		if !strings.HasSuffix(filename, ".json") {
-			filename += ".json"
-		}
-
-		filePath := filepath.Join("data", filename)
-
-		// Check if file exists
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			printErrorScreen(fmt.Sprintf("File %s not found in data folder", filename))
-			return
-		}
-
-		displayTable(filePath)
-		return
+// UnmarshalJSON is a custom unmarshaler for SteelProperty to handle JSON fields with commas.
+func (sp *SteelProperty) UnmarshalJSON(data []byte) error {
+	// Use an alias to avoid recursion
+	type Alias SteelProperty
+	aux := &struct {
+		*Alias
+	}{
+		Alias: (*Alias)(sp),
 	}
 
-	// Command line mode - original behavior
-	filename := os.Args[1]
+	// First, unmarshal into the alias
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	// Now, unmarshal into a map to get the fields with commas
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(data, &rawMap); err != nil {
+		return err
+	}
+
+	// Manually assign the values from the map to the struct fields
+	if val, ok := rawMap["C,N,S"]; ok {
+		sp.CNS = val
+	}
+	if val, ok := rawMap["C,N,S__1"]; ok {
+		sp.CNS2 = val
+	}
+
+	return nil
+}
+
+func main() {
+	fmt.Print(ColorBg + ColorClear)
+	// Defer the color reset as well.
+	defer fmt.Print(ColorReset)
+
+	if len(os.Args) < 2 {
+		// Get the initial terminal state just once at the start for interactive mode.
+		initialState, err := getTerminalState()
+		if err != nil {
+			// If we can't get the state, we can't safely run the interactive mode.
+			log.Fatalf("Fatal: Could not get terminal state: %v", err)
+		}
+		// Defer the final restoration to ensure the terminal is clean on exit.
+		defer restoreTerminal(initialState)
+
+		// Run interactive mode with the known initial state.
+		runInteractiveMode(initialState)
+	} else {
+		// Run command-line mode, which doesn't need state management.
+		runCommandLineMode(os.Args[1])
+	}
+
+	// Final cleanup: clear the screen before the program fully exits.
+	fmt.Print(ColorClear)
+}
+
+func runInteractiveMode(initialState *termios) {
+	for {
+		// CRITICAL: Always ensure we're in canonical mode for the menu
+		// This allows typing and Enter to work correctly
+		restoreTerminal(initialState)
+
+		selectedFile := printWelcomeScreenInteractive()
+		if selectedFile == "" { // User chose to quit from the menu
+			return // Exit the function, defer in main() will handle cleanup.
+		}
+
+		filePath := filepath.Join("data", selectedFile)
+
+		// Switch to raw mode for table navigation
+		err := setRawMode()
+		if err != nil {
+			log.Printf("Error entering raw mode: %v. Returning to menu.", err)
+			continue // Skip to the next loop iteration, which will restore the terminal.
+		}
+
+		// Display the table in raw mode
+		returnToMenu := displayTable(filePath)
+
+		// CRITICAL: Always restore to canonical mode after table view
+		// This ensures the menu will work correctly on the next iteration
+		restoreTerminal(initialState)
+
+		if !returnToMenu { // User chose to quit from the table view
+			break
+		}
+		// Loop continues - next iteration will ensure canonical mode for menu
+	}
+}
+
+func runCommandLineMode(tableName string) {
+	filename := strings.ToUpper(tableName)
+	if !strings.HasSuffix(filename, "_PROPS") {
+		filename += "_PROPS"
+	}
 	if !strings.HasSuffix(filename, ".json") {
 		filename += ".json"
 	}
-
 	filePath := filepath.Join("data", filename)
 
-	// Check if file exists
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
-		printErrorScreen(fmt.Sprintf("File %s not found in data folder", filename))
-		return
+		log.Fatalf("Table '%s' not found.", tableName)
 	}
 
-	displayTable(filePath)
+	// For command-line mode, just print the table once without any interaction.
+	printTableOnce(filePath)
 }
 
-func printWelcomeScreen() {
-	fmt.Print(ColorClear)
-
-	// Title with accent color
-	fmt.Printf("%s╔══════════════════════════════════════════════════════════════════════════════╗%s\n", ColorBorderBright, ColorReset)
-	fmt.Printf("%s║%s                              %sSTEEL TABLES VIEWER%s                       %s║%s\n", ColorBorderBright, ColorBg, ColorAccent, ColorBg, ColorBorderBright, ColorReset)
-	fmt.Printf("%s╚══════════════════════════════════════════════════════════════════════════════╝%s\n\n", ColorBorderBright, ColorReset)
-
-	// Usage section
-	fmt.Printf("%s%s▶ USAGE:%s\n", ColorBg, ColorAccent, ColorReset)
-	fmt.Printf("%s  %sgo run main.go <filename>%s\n\n", ColorBg, ColorTextBright, ColorReset)
-
-	// Available files section
-	fmt.Printf("%s%s▶ STEEL PROPERTIES:%s\n", ColorBg, ColorAccent, ColorReset)
-	listJSONFilesStyled()
-
-	// Instructions
-	fmt.Printf("\n%s%s▶ NAVIGATION:%s\n", ColorBg, ColorAccent, ColorReset)
-	fmt.Printf("%s  %s>%s or %s→%s  Next page of columns\n", ColorBg, ColorSuccess, ColorText, ColorSuccess, ColorText)
-	fmt.Printf("%s  %s<%s or %s←%s  Previous page of columns\n", ColorBg, ColorSuccess, ColorText, ColorSuccess, ColorText)
-	fmt.Printf("%s  %sm%s        Main Menu\n\n", ColorBg, ColorAccent, ColorText)
-	fmt.Printf("%s  %sq%s        Quit application\n\n", ColorBg, ColorError, ColorText)
-
-	fmt.Print(ColorReset)
-}
-
-func printErrorScreen(message string) {
-	fmt.Print(ColorClear)
-
-	// Error header
-	fmt.Printf("%s╔══════════════════════════════════════════════════════════════════════════════╗%s\n", ColorError, ColorReset)
-	fmt.Printf("%s║%s                                   %sERROR%s                                      %s║%s\n", ColorError, ColorBg, ColorError, ColorBg, ColorError, ColorReset)
-	fmt.Printf("%s╚══════════════════════════════════════════════════════════════════════════════╝%s\n\n", ColorError, ColorReset)
-
-	// Error message
-	fmt.Printf("%s%s✗ %s%s\n\n", ColorBg, ColorError, message, ColorReset)
-
-	// Available files section
-	fmt.Printf("%s%s▶ AVAILABLE FILES:%s\n", ColorBg, ColorAccent, ColorReset)
-	listJSONFilesStyled()
-
-	fmt.Print(ColorReset)
-}
-
-func listJSONFilesStyled() {
-	files, err := os.ReadDir("data")
+// printTableOnce is a new function for non-interactive display.
+func printTableOnce(filePath string) {
+	data, err := os.ReadFile(filePath)
 	if err != nil {
-		fmt.Printf("%s%s✗ Error reading data directory: %v%s\n", ColorBg, ColorError, err, ColorReset)
-		return
+		log.Fatal("Error reading file:", err)
 	}
 
-	for i, file := range files {
-		if strings.HasSuffix(file.Name(), ".json") {
-			// Extract the identifying part (remove _PROPS.json)
-			displayName := file.Name()
-			if strings.HasSuffix(displayName, "_PROPS.json") {
-				displayName = strings.TrimSuffix(displayName, "_PROPS.json")
-			} else if strings.HasSuffix(displayName, ".json") {
-				displayName = strings.TrimSuffix(displayName, ".json")
-			}
+	var properties []SteelProperty
+	if err := json.Unmarshal(data, &properties); err != nil {
+		log.Fatal("Error parsing JSON:", err)
+	}
 
-			// Alternate colors for better readability
-			if i%2 == 0 {
-				fmt.Printf("%s  %s● %s%s%s\n", ColorBg, ColorAccent, ColorTextBright, displayName, ColorReset)
-			} else {
-				fmt.Printf("%s  %s● %s%s%s\n", ColorBg, ColorBlue, ColorText, displayName, ColorReset)
+	allColumns := getAllColumns()
+	availableColumns := filterAvailableColumns(allColumns, properties)
+	maxCols := 7
+	totalPages := (len(availableColumns) + maxCols - 1) / maxCols
+
+	// Use the background color, but don't clear the whole screen like in interactive mode.
+	fmt.Print(ColorBg)
+
+	for i := 0; i < totalPages; i++ {
+		startCol := i * maxCols
+		endCol := startCol + maxCols
+		if endCol > len(availableColumns) {
+			endCol = len(availableColumns)
+		}
+		currentColumns := availableColumns[startCol:endCol]
+		drawHeader(filepath.Base(filePath), i+1, totalPages, len(properties))
+		drawColumnHeaders(currentColumns)
+		drawDataRows(properties, currentColumns)
+		fillRemainingSpace()
+		if i < totalPages-1 {
+			fmt.Println() // Add space between pages
+		}
+	}
+	// Reset color at the very end.
+	fmt.Print(ColorReset)
+}
+
+// displayTable now correctly assumes it is ONLY called when in RAW mode.
+func displayTable(filePath string) bool {
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		log.Fatal("Error reading file:", err)
+	}
+
+	var properties []SteelProperty
+	if err := json.Unmarshal(data, &properties); err != nil {
+		log.Fatal("Error parsing JSON:", err)
+	}
+
+	allColumns := getAllColumns()
+	availableColumns := filterAvailableColumns(allColumns, properties)
+
+	currentPage := 0
+	maxCols := 7
+
+	for {
+		fmt.Print(ColorBg + ColorClear)
+
+		startCol := currentPage * maxCols
+		endCol := startCol + maxCols
+		if endCol > len(availableColumns) {
+			endCol = len(availableColumns)
+		}
+
+		currentColumns := availableColumns[startCol:endCol]
+		totalPages := (len(availableColumns) + maxCols - 1) / maxCols
+
+		drawHeader(filepath.Base(filePath), currentPage+1, totalPages, len(properties))
+		drawColumnHeaders(currentColumns)
+		drawDataRows(properties, currentColumns)
+		fillRemainingSpace()
+		drawNavigationFooter(currentPage, totalPages)
+
+		// Read a single byte in raw mode
+		buffer := make([]byte, 128)
+		n, err := os.Stdin.Read(buffer)
+		if err != nil {
+			return false
+		}
+		input := buffer[:n]
+
+		switch {
+		case len(input) == 1 && (input[0] == 'q' || input[0] == 'Q' || input[0] == 3): // q, Q, or Ctrl+C
+			return false // Quit
+		case len(input) == 1 && (input[0] == 'm' || input[0] == 'M'):
+			return true // Return to menu
+		case len(input) == 1 && (input[0] == '>'):
+			if endCol < len(availableColumns) {
+				currentPage++
+			}
+		case len(input) == 1 && (input[0] == '<'):
+			if currentPage > 0 {
+				currentPage--
+			}
+		case len(input) == 3 && input[0] == 27 && input[1] == 91: // Arrow keys
+			switch input[2] {
+			case 67: // Right
+				if endCol < len(availableColumns) {
+					currentPage++
+				}
+			case 68: // Left
+				if currentPage > 0 {
+					currentPage--
+				}
 			}
 		}
 	}
 }
 
-// listJSONFilesStyledFullWidth displays available JSON files with full terminal width background
+func printWelcomeScreenInteractive() string {
+	for {
+		termWidth := getTerminalWidth()
+		fmt.Print(ColorClear)
+
+		// Title
+		titleText := "STEEL TABLES VIEWER"
+		titlePadding := 14
+		titleBoxWidth := len(titleText) + (titlePadding * 2)
+		if titleBoxWidth < 60 {
+			titleBoxWidth = 60
+		}
+		if titleBoxWidth > termWidth-4 {
+			titleBoxWidth = termWidth - 4
+		}
+		centerOffset := (termWidth - titleBoxWidth - 2) / 2
+		if centerOffset < 0 {
+			centerOffset = 0
+		}
+		remainingSpace := termWidth - centerOffset - titleBoxWidth - 2
+		if remainingSpace < 0 {
+			remainingSpace = 0
+		}
+
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+		fmt.Printf("%s╔%s╗", ColorBorderBright, strings.Repeat("═", titleBoxWidth))
+		fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+
+		textPadding := (titleBoxWidth - len(titleText)) / 2
+		leftPadding := textPadding
+		rightPadding := titleBoxWidth - len(titleText) - leftPadding
+
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+		fmt.Printf("%s║%s%s%s%s%s%s%s║",
+			ColorBorderBright, ColorBg, strings.Repeat(" ", leftPadding), ColorAccent, titleText, ColorBg, strings.Repeat(" ", rightPadding), ColorBorderBright)
+		fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+		fmt.Printf("%s╚%s╝", ColorBorderBright, strings.Repeat("═", titleBoxWidth))
+		fmt.Printf("%s%s%s\n\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+
+		// Available files
+		fmt.Printf("%s%s▶ AVAILABLE STEEL TABLES:%s%s\n", ColorBg, ColorAccent,
+			strings.Repeat(" ", termWidth-len("▶ AVAILABLE STEEL TABLES:")), ColorReset)
+		listJSONFilesStyledFullWidth()
+
+		// Instructions
+		fmt.Printf("\n%s%s▶ INSTRUCTIONS:%s%s\n", ColorBg, ColorAccent,
+			strings.Repeat(" ", termWidth-len("▶ INSTRUCTIONS:")), ColorReset)
+		line1 := "  • Type the table name (e.g., PFC300, RHS450, UB350)"
+		fmt.Printf("%s%s%s%s\n", ColorBg, line1,
+			strings.Repeat(" ", termWidth-len(line1)), ColorReset)
+		line2 := "  • Type 'f' to filter tables (e.g., f PFC+UB+UC)"
+		fmt.Printf("%s%s%s%s\n", ColorBg, line2,
+			strings.Repeat(" ", termWidth-len(line2)), ColorReset)
+		line3 := "  • Type q or quit to exit"
+		fmt.Printf("%s%s%s%s\n", ColorBg, line3,
+			strings.Repeat(" ", termWidth-len(line3)), ColorReset)
+		line4 := "  • Press Enter to confirm your selection"
+		fmt.Printf("%s%s%s%s\n\n", ColorBg, line4,
+			strings.Repeat(" ", termWidth-len(line4)), ColorReset)
+
+		// Input prompt
+		fmt.Printf("%s▶ SELECT TABLE: %s", ColorAccent, ColorReset)
+
+		// Use bufio.Reader to read a full line, which is more reliable than fmt.Scanln
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			// On EOF or other errors, treat as a quit command
+			return ""
+		}
+		input = strings.TrimSpace(strings.ToUpper(input))
+
+		if input == "Q" || input == "QUIT" || input == "EXIT" {
+			return ""
+		}
+
+		if input == "" {
+			continue // Empty input, show menu again
+		}
+
+		// Check for filter command
+		if strings.HasPrefix(input, "F ") || strings.HasPrefix(input, "FILTER ") {
+			filterQuery := ""
+			if strings.HasPrefix(input, "F ") {
+				filterQuery = strings.TrimSpace(input[2:])
+			} else {
+				filterQuery = strings.TrimSpace(input[7:])
+			}
+
+			if filterQuery != "" {
+				filteredSections := filterTables(filterQuery)
+				if len(filteredSections) > 0 {
+					selectedTable := showFilterResults(filteredSections)
+					if selectedTable != "" {
+						return selectedTable
+					}
+				} else {
+					fmt.Printf("\n%s✗ No sections found matching filter '%s'. Please try again...%s\n", ColorError, filterQuery, ColorReset)
+					fmt.Printf("%sPress Enter to continue...%s", ColorTextDim, ColorReset)
+					reader.ReadString('\n')
+				}
+			}
+			continue
+		}
+
+		if isValidTable(input) {
+			return input + "_PROPS.json"
+		} else {
+			fmt.Printf("\n%s✗ Table '%s' not found. Please try again...%s\n", ColorError, input, ColorReset)
+			fmt.Printf("%sPress Enter to continue...%s", ColorTextDim, ColorReset)
+			reader.ReadString('\n') // Wait for user to press Enter
+		}
+	}
+}
+
+func isValidTable(tableName string) bool {
+	files, err := os.ReadDir("data")
+	if err != nil {
+		return false
+	}
+	expectedFilename := strings.ToUpper(tableName) + "_PROPS.json"
+	for _, file := range files {
+		if file.Name() == expectedFilename {
+			return true
+		}
+	}
+	return false
+}
+
 func listJSONFilesStyledFullWidth() {
 	termWidth := getTerminalWidth()
 	files, err := os.ReadDir("data")
@@ -224,53 +473,288 @@ func listJSONFilesStyledFullWidth() {
 
 	for i, file := range files {
 		if strings.HasSuffix(file.Name(), ".json") {
-			// Extract the identifying part (remove _PROPS.json)
-			displayName := file.Name()
-			if strings.HasSuffix(displayName, "_PROPS.json") {
-				displayName = strings.TrimSuffix(displayName, "_PROPS.json")
-			} else if strings.HasSuffix(displayName, ".json") {
-				displayName = strings.TrimSuffix(displayName, ".json")
+			displayName := strings.TrimSuffix(file.Name(), "_PROPS.json")
+			line := fmt.Sprintf("  ● %s", displayName)
+			padding := termWidth - len(line)
+			if padding < 0 {
+				padding = 0
 			}
 
-			// Create the line content
-			var line string
 			if i%2 == 0 {
-				line = fmt.Sprintf("  ● %s", displayName)
+				fmt.Printf("%s%s  ● %s%s%s%s\n", ColorBg, ColorAccent, ColorTextBright, displayName,
+					strings.Repeat(" ", padding), ColorReset)
 			} else {
-				line = fmt.Sprintf("  ● %s", displayName)
-			}
-
-			// Alternate colors for better readability with full width background
-			if i%2 == 0 {
-				fmt.Printf("%s%s%s%s%s%s\n", ColorBg, ColorAccent, "  ● ", ColorTextBright, displayName,
-					strings.Repeat(" ", termWidth-len(line))+ColorReset)
-			} else {
-				fmt.Printf("%s%s%s%s%s%s\n", ColorBg, ColorBlue, "  ● ", ColorText, displayName,
-					strings.Repeat(" ", termWidth-len(line))+ColorReset)
+				fmt.Printf("%s%s  ● %s%s%s%s\n", ColorBg, ColorBlue, ColorText, displayName,
+					strings.Repeat(" ", padding), ColorReset)
 			}
 		}
 	}
 }
 
-func displayTable(filePath string) {
-	// Set terminal to raw mode for immediate key reading
-	oldState := setRawMode()
-	defer restoreTerminal(oldState)
+type ColumnInfo struct {
+	Name      string
+	Formatter func(SteelProperty) string
+}
 
-	// Read the JSON file
-	data, err := os.ReadFile(filePath)
+func formatInterface(value interface{}) string {
+	if value == nil {
+		return "-"
+	}
+	switch v := value.(type) {
+	case string:
+		if v == "" || v == "-" {
+			return "-"
+		}
+		return v
+	case float64:
+		if v == float64(int64(v)) {
+			return fmt.Sprintf("%.0f", v)
+		}
+		return fmt.Sprintf("%.1f", v)
+	case int:
+		return fmt.Sprintf("%d", v)
+	default:
+		str := fmt.Sprintf("%v", v)
+		if str == "" {
+			return "-"
+		}
+		return str
+	}
+}
+
+func cleanSectionName(section string) string {
+	if idx := strings.Index(section, " (G"); idx != -1 {
+		if endIdx := strings.Index(section[idx:], ")"); endIdx != -1 {
+			return section[:idx] + section[idx+endIdx+1:]
+		}
+	}
+	return section
+}
+
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	if maxLen <= 2 {
+		return s[:maxLen]
+	}
+	return s[:maxLen-1] + "."
+}
+
+func getTerminalWidth() int {
+	cmd := exec.Command("tput", "cols")
+	cmd.Stdin = os.Stdin
+	output, err := cmd.Output()
 	if err != nil {
-		log.Fatal("Error reading file:", err)
+		return 120 // Default fallback
+	}
+	width, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil || width < 80 {
+		return 120 // Default fallback
+	}
+	if width > 200 {
+		width = 200
+	}
+	return width
+}
+
+func drawHeader(filename string, currentPage, totalPages, totalEntries int) {
+	termWidth := getTerminalWidth()
+	titleText := fmt.Sprintf("STEEL PROPERTIES: %s", strings.ToUpper(strings.TrimSuffix(filename, ".json")))
+	infoText := fmt.Sprintf("Page %d/%d | %d entries", currentPage, totalPages, totalEntries)
+
+	// Ensure no trailing spaces in infoText
+	infoText = strings.TrimSpace(infoText)
+
+	boxWidth := len(titleText)
+	if len(infoText) > boxWidth {
+		boxWidth = len(infoText)
+	}
+	boxWidth += 6
+
+	if boxWidth < 60 {
+		boxWidth = 60
+	}
+	if boxWidth > termWidth-4 {
+		boxWidth = termWidth - 4
 	}
 
-	// Parse JSON
-	var properties []SteelProperty
-	if err := json.Unmarshal(data, &properties); err != nil {
-		log.Fatal("Error parsing JSON:", err)
+	centerOffset := (termWidth - boxWidth - 2) / 2
+	if centerOffset < 0 {
+		centerOffset = 0
+	}
+	remainingSpace := termWidth - centerOffset - boxWidth - 2
+	if remainingSpace < 0 {
+		remainingSpace = 0
 	}
 
-	// Define all available columns (excluding Section which is always shown)
-	allColumns := []ColumnInfo{
+	// Top border
+	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+	fmt.Printf("%s╔%s╗", ColorBorderBright, strings.Repeat("═", boxWidth))
+	fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+
+	// Title row
+	titlePadding := (boxWidth - len(titleText)) / 2
+	titleRightPadding := boxWidth - len(titleText) - titlePadding
+	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+	fmt.Printf("%s║%s%s%s%s%s%s%s║",
+		ColorBorderBright, ColorBg, strings.Repeat(" ", titlePadding), ColorAccent, titleText, ColorBg, strings.Repeat(" ", titleRightPadding), ColorBorderBright)
+	fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+
+	// Info row
+	infoPadding := (boxWidth - len(infoText)) / 2
+	infoRightPadding := boxWidth - len(infoText) - infoPadding
+	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+	fmt.Printf("%s║%s%s%s%s%s%s%s║",
+		ColorBorderBright, ColorBg, strings.Repeat(" ", infoPadding), ColorTextDim, infoText, ColorBg, strings.Repeat(" ", infoRightPadding), ColorBorderBright)
+	fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+
+	// Bottom border
+	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+	fmt.Printf("%s╚%s╝", ColorBorderBright, strings.Repeat("═", boxWidth))
+	fmt.Printf("%s%s%s\n\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+}
+
+func drawColumnHeaders(currentColumns []ColumnInfo) {
+	termWidth := getTerminalWidth()
+	fmt.Printf("%s%s", ColorBgLight, ColorAccent)
+	fmt.Printf("%-25s", "Section")
+	for _, col := range currentColumns {
+		headerText := getColumnHeaderWithUnit(col.Name)
+		fmt.Printf("%-18s", truncateString(headerText, 17))
+	}
+	usedSpace := 25 + (len(currentColumns) * 18)
+	remainingSpace := termWidth - usedSpace
+	if remainingSpace > 0 {
+		fmt.Printf("%s", strings.Repeat(" ", remainingSpace))
+	}
+	fmt.Printf("%s\n", ColorReset)
+
+	fmt.Printf("%s%s", ColorBgLight, ColorBorderBright)
+	fmt.Print(strings.Repeat("─", 25))
+	for range currentColumns {
+		fmt.Print(strings.Repeat("─", 18))
+	}
+	if remainingSpace > 0 {
+		fmt.Print(strings.Repeat("─", remainingSpace))
+	}
+	fmt.Printf("%s\n", ColorReset)
+}
+
+// getColumnHeaderWithUnit returns the column name with appropriate unit
+func getColumnHeaderWithUnit(columnName string) string {
+	unitMap := map[string]string{
+		"Weight": "kg/m", "d": "mm", "bf": "mm", "tf": "mm", "tw": "mm", "r1": "mm", "d1": "mm",
+		"tw__1": "mm", "tf__1": "mm", "Ag": "mm²", "Ix": "10³mm⁴", "Zx": "10³mm³", "Sx": "10³mm³",
+		"rx": "mm", "Iy": "10³mm⁴", "Zy": "mm³", "Sy": "mm³", "ry": "mm", "J": "mm⁴", "Iw": "mm⁶",
+		"flange": "mm", "web": "mm", "Zex": "mm³", "Zey": "mm³", "Zy5": "mm³", "Fu": "MPa", "r2": "mm",
+		"ZeyD": "mm³", "In": "10³mm⁴", "Ip": "10³mm⁴", "ZexC": "mm³", "x5": "mm", "y5": "mm", "nL": "mm",
+		"pB": "mm", "pT": "mm",
+	}
+	if unit, exists := unitMap[columnName]; exists {
+		return fmt.Sprintf("%s (%s)", columnName, unit)
+	}
+	return columnName
+}
+
+func drawDataRows(properties []SteelProperty, currentColumns []ColumnInfo) {
+	termWidth := getTerminalWidth()
+	for i, prop := range properties {
+		if i%2 == 0 {
+			fmt.Printf("%s", ColorBg)
+		} else {
+			fmt.Printf("%s", ColorBgLight)
+		}
+
+		cleanedSection := cleanSectionName(prop.Section)
+		fmt.Printf("%s%-25s%s", ColorTextBright, truncateString(cleanedSection, 24), ColorText)
+
+		for _, col := range currentColumns {
+			value := col.Formatter(prop)
+			if value == "-" || value == "" {
+				fmt.Printf("%s%-18s", ColorTextDim, truncateString(value, 17))
+			} else {
+				fmt.Printf("%s%-18s", ColorText, truncateString(value, 17))
+			}
+		}
+
+		usedSpace := 25 + (len(currentColumns) * 18)
+		remainingSpace := termWidth - usedSpace
+		if remainingSpace > 0 {
+			fmt.Printf("%s", strings.Repeat(" ", remainingSpace))
+		}
+		fmt.Printf("%s\n", ColorReset)
+	}
+}
+
+func fillRemainingSpace() {
+	// This function can be used to fill the rest of the screen if needed,
+	// but the current drawing logic handles it row by row.
+}
+
+func drawNavigationFooter(currentPage, totalPages int) {
+	termWidth := getTerminalWidth()
+
+	// Build the footer with colored text
+	footerText := fmt.Sprintf("  %s<%s %s>%s or %s←%s %s→%s to navigate pages  |  %sm%s for menu  |  %sq%s to %squit%s  ",
+		ColorAccent, ColorText, // <
+		ColorAccent, ColorText, // >
+		ColorAccent, ColorText, // ←
+		ColorAccent, ColorText, // →
+		ColorAccent, ColorText, // m
+		ColorError, ColorText, // q
+		ColorError, ColorText) // quit
+
+	// Calculate plain text length for centering (without color codes)
+	plainText := "  < > or ← → to navigate pages  |  m for menu  |  q to quit  "
+	padding := (termWidth - len(plainText)) / 2
+	if padding < 0 {
+		padding = 0
+	}
+
+	fmt.Printf("\n%s%s%s%s%s\n",
+		ColorBg, strings.Repeat(" ", padding), footerText, ColorBg, strings.Repeat(" ", termWidth-len(plainText)-padding))
+}
+
+func filterAvailableColumns(allColumns []ColumnInfo, properties []SteelProperty) []ColumnInfo {
+	var availableColumns []ColumnInfo
+	for _, col := range allColumns {
+		hasNonDashData := false
+		hasRealData := false
+
+		for _, p := range properties {
+			val := col.Formatter(p)
+
+			// Check if any value is not a dash
+			if val != "-" {
+				hasNonDashData = true
+
+				// Check if the value represents actual meaningful data (not empty or zero)
+				if val != "" {
+					// Check if it's a numeric zero in various formats
+					if val == "0" || val == "0.0" || val == "0.00" || val == "0.000" {
+						continue // This is still considered "no real data"
+					}
+					// Check if it's a float that formats to zero
+					if f, err := strconv.ParseFloat(val, 64); err == nil && f == 0.0 {
+						continue // This is still considered "no real data"
+					}
+					hasRealData = true
+				}
+			}
+		}
+
+		// Include column if it has non-dash values AND real data
+		// This will exclude columns that are all dashes OR all zeros
+		if hasNonDashData && hasRealData {
+			availableColumns = append(availableColumns, col)
+		}
+	}
+	return availableColumns
+}
+
+func getAllColumns() []ColumnInfo {
+	return []ColumnInfo{
 		{"Grade", func(p SteelProperty) string { return fmt.Sprintf("%d", p.Grade) }},
 		{"Weight", func(p SteelProperty) string { return fmt.Sprintf("%.1f", p.Weight) }},
 		{"d", func(p SteelProperty) string { return fmt.Sprintf("%.1f", p.D) }},
@@ -368,619 +852,214 @@ func displayTable(filePath string) {
 		}},
 		{"Type", func(p SteelProperty) string { return formatInterface(p.Type) }},
 	}
+}
 
-	// Filter out empty columns dynamically
-	availableColumns := filterAvailableColumns(allColumns, properties)
+// SectionResult represents a steel section found in the search
+type SectionResult struct {
+	Section   string
+	TableName string
+	FilePath  string
+}
 
-	currentPage := 0
-	maxCols := 7 // 7 additional columns + Section = 8 total (adjusted for wider columns to fit all text)
+// filterTables filters available steel sections based on search criteria
+func filterTables(query string) []SectionResult {
+	files, err := os.ReadDir("data")
+	if err != nil {
+		return nil
+	}
 
-	for {
-		// Clear screen and set background
-		fmt.Print(ColorBg + ColorClear)
+	// Parse the query - split by + to get multiple filters
+	filters := strings.Split(strings.ToUpper(query), "+")
+	for i, filter := range filters {
+		filters[i] = strings.TrimSpace(filter)
+	}
 
-		// Calculate column range for current page
-		startCol := currentPage * maxCols
-		endCol := startCol + maxCols
-		if endCol > len(availableColumns) {
-			endCol = len(availableColumns)
-		}
+	var matchingSections []SectionResult
 
-		currentColumns := availableColumns[startCol:endCol]
-		totalPages := (len(availableColumns) + maxCols - 1) / maxCols
+	// Search through all JSON files
+	for _, file := range files {
+		if strings.HasSuffix(file.Name(), ".json") {
+			filePath := filepath.Join("data", file.Name())
+			tableName := strings.TrimSuffix(file.Name(), "_PROPS.json")
 
-		// Beautiful header with accent colors
-		drawHeader(filepath.Base(filePath), currentPage+1, totalPages, len(properties))
-
-		// Column headers with styling
-		drawColumnHeaders(currentColumns)
-
-		// Data rows with alternating colors
-		drawDataRows(properties, currentColumns)
-
-		// Fill any remaining vertical space with background color
-		fillRemainingSpace()
-
-		// Navigation footer
-		drawNavigationFooter(currentPage, totalPages)
-
-		// Read single character input
-		key := readKey()
-
-		switch key {
-		case 'q', 'Q':
-			fmt.Print(ColorReset)
-			return
-		case 'm', 'M':
-			// Return to main menu
-			fmt.Print(ColorReset)
-			restoreTerminal(oldState) // Restore terminal before returning to menu
-
-			// Call main menu again
-			selectedFile := printWelcomeScreenInteractive()
-			if selectedFile == "" {
-				return // User chose to quit from menu
-			}
-
-			// Load the new selected file
-			newFilePath := filepath.Join("data", selectedFile)
-			if _, err := os.Stat(newFilePath); os.IsNotExist(err) {
-				printErrorScreen(fmt.Sprintf("File %s not found in data folder", selectedFile))
-				return
-			}
-
-			// Read and parse the new file
-			data, err = os.ReadFile(newFilePath)
+			// Read and parse the JSON file
+			data, err := os.ReadFile(filePath)
 			if err != nil {
-				log.Fatal("Error reading file:", err)
+				continue
 			}
 
+			var properties []SteelProperty
 			if err := json.Unmarshal(data, &properties); err != nil {
-				log.Fatal("Error parsing JSON:", err)
+				continue
 			}
 
-			// Re-filter columns for the new dataset
-			availableColumns = filterAvailableColumns(allColumns, properties)
+			// Search through all sections in this file
+			for _, prop := range properties {
+				sectionName := strings.ToUpper(prop.Section)
 
-			// Update file path and reset to first page
-			filePath = newFilePath
-			currentPage = 0
-
-			// Set raw mode again for the new table
-			oldState = setRawMode()
-			continue
-		case '>':
-			if endCol < len(availableColumns) {
-				currentPage++
-			}
-		case '<':
-			if currentPage > 0 {
-				currentPage--
-			}
-		case 27: // ESC sequence for arrow keys
-			// Read the next characters to handle arrow keys
-			if b1, ok := readKeyNonBlocking(); ok && b1 == 91 { // '['
-				if b2, ok := readKeyNonBlocking(); ok {
-					switch b2 {
-					case 67: // Right arrow
-						if endCol < len(availableColumns) {
-							currentPage++
-						}
-					case 68: // Left arrow
-						if currentPage > 0 {
-							currentPage--
-						}
+				// Check if the section name contains any of the filter terms
+				for _, filter := range filters {
+					if filter != "" && strings.Contains(sectionName, filter) {
+						matchingSections = append(matchingSections, SectionResult{
+							Section:   prop.Section,
+							TableName: tableName,
+							FilePath:  filePath,
+						})
+						break // Only add each section once per filter match
 					}
 				}
 			}
 		}
 	}
+
+	return matchingSections
 }
 
-type ColumnInfo struct {
-	Name      string
-	Formatter func(SteelProperty) string
-}
-
-func formatInterface(value interface{}) string {
-	if value == nil {
-		return "-"
-	}
-
-	switch v := value.(type) {
-	case string:
-		if v == "" || v == "-" {
-			return "-"
-		}
-		return v
-	case float64:
-		if v == float64(int64(v)) {
-			return fmt.Sprintf("%.0f", v)
-		}
-		return fmt.Sprintf("%.1f", v)
-	case int:
-		return fmt.Sprintf("%d", v)
-	default:
-		str := fmt.Sprintf("%v", v)
-		if str == "" {
-			return "-"
-		}
-		return str
-	}
-}
-
-// cleanSectionName removes grade information like (G300) or (G350) from section names
-func cleanSectionName(section string) string {
-	// Remove patterns like " (G300)", " (G350)", etc.
-	// This regex matches " (G" followed by digits and closing parenthesis
-	if idx := strings.Index(section, " (G"); idx != -1 {
-		if endIdx := strings.Index(section[idx:], ")"); endIdx != -1 {
-			return section[:idx] + section[idx+endIdx+1:]
-		}
-	}
-	return section
-}
-
-func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	// Very minimal truncation - allow almost all text to show
-	if maxLen <= 2 {
-		return s[:maxLen]
-	}
-	return s[:maxLen-1] + "."
-}
-
-func drawHeader(filename string, currentPage, totalPages, totalEntries int) {
-	// Get actual terminal width for proper centering
-	termWidth := getTerminalWidth()
-	if termWidth < 100 {
-		termWidth = 150 // Wider minimum for better display
-	}
-
-	// Calculate box width based on content or minimum width
-	titleText := fmt.Sprintf("STEEL PROPERTIES: %s", strings.ToUpper(filename))
-	infoText := fmt.Sprintf("Page %d/%d │ %d entries │ 8 columns per page", currentPage, totalPages, totalEntries)
-
-	// Use the longer of the two texts to determine box width, with padding
-	boxWidth := len(titleText)
-	if len(infoText) > boxWidth {
-		boxWidth = len(infoText)
-	}
-	boxWidth += 8 // Add padding
-
-	// Ensure minimum width
-	if boxWidth < 80 {
-		boxWidth = 80
-	}
-
-	// Calculate centering offset for the entire box
-	centerOffset := (termWidth - boxWidth - 4) / 2 // -4 for borders
-	if centerOffset < 0 {
-		centerOffset = 0
-	}
-
-	// Top border with centering
-	fmt.Printf("%s%s%s╔%s╗%s\n", ColorBg, strings.Repeat(" ", centerOffset), ColorBorderBright,
-		strings.Repeat("═", boxWidth), ColorReset)
-
-	// Title row with centering
-	titlePadding := (boxWidth - len(titleText)) / 2
-	remainingTitlePadding := boxWidth - len(titleText) - titlePadding
-
-	fmt.Printf("%s%s%s║%s", ColorBg, strings.Repeat(" ", centerOffset), ColorBorderBright, ColorBg)
-	fmt.Printf("%s", strings.Repeat(" ", titlePadding))
-	fmt.Printf("%s%s%s", ColorAccent, titleText, ColorBg)
-	fmt.Printf("%s", strings.Repeat(" ", remainingTitlePadding))
-	fmt.Printf("%s║%s\n", ColorBorderBright, ColorReset)
-
-	// Info row with centering
-	infoPadding := (boxWidth - len(infoText)) / 2
-	remainingInfoPadding := boxWidth - len(infoText) - infoPadding
-
-	fmt.Printf("%s%s%s║%s", ColorBg, strings.Repeat(" ", centerOffset), ColorBorderBright, ColorBg)
-	fmt.Printf("%s", strings.Repeat(" ", infoPadding))
-	fmt.Printf("%s%s%s", ColorTextDim, infoText, ColorBg)
-	fmt.Printf("%s", strings.Repeat(" ", remainingInfoPadding))
-	fmt.Printf("%s║%s\n", ColorBorderBright, ColorReset)
-
-	// Bottom border with centering
-	fmt.Printf("%s%s%s╚%s╝%s\n\n", ColorBg, strings.Repeat(" ", centerOffset), ColorBorderBright,
-		strings.Repeat("═", boxWidth), ColorReset)
-}
-
-func drawColumnHeaders(currentColumns []ColumnInfo) {
-	termWidth := getTerminalWidth()
-
-	// Header background - fill entire terminal width
-	fmt.Printf("%s%s", ColorBgLight, ColorAccent)
-
-	// Section header (fixed column) - wider for better readability
-	fmt.Printf("%-35s", "Section")
-
-	// Dynamic columns with units - wider to fit full text
-	for _, col := range currentColumns {
-		headerText := getColumnHeaderWithUnit(col.Name)
-		fmt.Printf("%-18s", truncateString(headerText, 17))
-	}
-
-	// Fill remaining space to terminal width
-	usedSpace := 35 + (len(currentColumns) * 18)
-	remainingSpace := termWidth - usedSpace
-	if remainingSpace > 0 {
-		fmt.Printf("%s", strings.Repeat(" ", remainingSpace))
-	}
-	fmt.Printf("%s\n", ColorReset)
-
-	// Header separator with accent color - fill entire terminal width
-	fmt.Printf("%s%s", ColorBgLight, ColorBorderBright)
-	fmt.Print(strings.Repeat("─", 35))
-	for range currentColumns {
-		fmt.Print(strings.Repeat("─", 18))
-	}
-	// Fill remaining separator space
-	if remainingSpace > 0 {
-		fmt.Print(strings.Repeat("─", remainingSpace))
-	}
-	fmt.Printf("%s\n", ColorReset)
-}
-
-// getColumnHeaderWithUnit returns the column name with appropriate unit
-func getColumnHeaderWithUnit(columnName string) string {
-	unitMap := map[string]string{
-		"Grade":    "",
-		"Weight":   "(kg/m)",
-		"d":        "(mm)",
-		"bf":       "(mm)",
-		"tf":       "(mm)",
-		"tw":       "(mm)",
-		"r1":       "(mm)",
-		"d1":       "(mm)",
-		"tw__1":    "(mm)",
-		"tf__1":    "(mm)",
-		"Ag":       "(mm²)",
-		"Ix":       "(10³mm⁴)",
-		"Zx":       "(10³mm³)",
-		"Sx":       "(10³mm³)",
-		"rx":       "(mm)",
-		"Iy":       "(10³mm⁴)",
-		"Zy":       "(mm³)",
-		"Sy":       "(mm³)",
-		"ry":       "(mm)",
-		"J":        "(mm⁴)",
-		"Iw":       "(mm⁶)",
-		"flange":   "(mm)",
-		"web":      "(mm)",
-		"kf":       "",
-		"C,N,S":    "",
-		"Zex":      "(mm³)",
-		"C,N,S__1": "",
-		"Zey":      "(mm³)",
-		"2tf":      "",
-		"Zy5":      "(mm³)",
-		"TanAlpha": "",
-		"αb":       "",
-		"Fu":       "(MPa)",
-		"r2":       "(mm)",
-		"ZeyD":     "(mm³)",
-		"In":       "(10³mm⁴)",
-		"Ip":       "(10³mm⁴)",
-		"ZexC":     "(mm³)",
-		"x5":       "(mm)",
-		"y5":       "(mm)",
-		"nL":       "(mm)",
-		"pB":       "(mm)",
-		"pT":       "(mm)",
-		"Residual": "",
-		"Type":     "",
-		"ZeyL":     "(mm³)",
-		"ZyL":      "(mm³)",
-		"ZeyR":     "(mm³)",
-		"ZyR":      "(mm³)",
-		"xL":       "(mm)",
-		"Xo":       "(mm)",
-	}
-
-	if unit, exists := unitMap[columnName]; exists && unit != "" {
-		return columnName + unit
-	}
-	return columnName
-}
-
-func drawDataRows(properties []SteelProperty, currentColumns []ColumnInfo) {
-	termWidth := getTerminalWidth()
-
-	for i, prop := range properties {
-		// Alternate row colors for better readability
-		if i%2 == 0 {
-			fmt.Printf("%s", ColorBg) // Default background
-		} else {
-			fmt.Printf("%s", ColorBgLight) // Slightly lighter background
-		}
-
-		// Section column (always shown, highlighted) - wider for better readability
-		cleanedSection := cleanSectionName(prop.Section)
-		fmt.Printf("%s%-35s%s", ColorTextBright, truncateString(cleanedSection, 34), ColorText)
-
-		// Data columns - wider to match headers
-		for _, col := range currentColumns {
-			value := col.Formatter(prop)
-
-			// Color coding for different value types
-			if value == "-" || value == "" {
-				fmt.Printf("%s%-18s", ColorTextDim, truncateString(value, 17))
-			} else {
-				fmt.Printf("%s%-18s", ColorText, truncateString(value, 17))
-			}
-		}
-
-		// Fill remaining space to terminal width with background color
-		usedSpace := 35 + (len(currentColumns) * 18)
-		remainingSpace := termWidth - usedSpace
-		if remainingSpace > 0 {
-			fmt.Printf("%s", strings.Repeat(" ", remainingSpace))
-		}
-		fmt.Printf("%s\n", ColorReset)
-	}
-}
-
-func drawNavigationFooter(currentPage, totalPages int) {
-	termWidth := getTerminalWidth()
-
-	fmt.Printf("\n%s", ColorBg)
-
-	// Calculate content for the navigation box
-	pageInfo := fmt.Sprintf("Page %d/%d", currentPage+1, totalPages)
-
-	// Calculate box width with padding - make it a reasonable size
-	contentLength := len("NAVIGATION: < or ← prev │ > or → next │ m Main Menu │ q quit ") + len(pageInfo)
-	boxWidth := contentLength + 6 // Add padding
-	if boxWidth < 84 {
-		boxWidth = 84 // Minimum width similar to title box
-	}
-
-	// Calculate centering offset
-	centerOffset := (termWidth - boxWidth - 2) / 2 // -2 for borders
-	if centerOffset < 0 {
-		centerOffset = 0
-	}
-
-	// Fill background before the navigation box
-	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
-	fmt.Printf("%s╔%s╗", ColorBorder, strings.Repeat("═", boxWidth))
-	// Fill background after the navigation box
-	remainingSpace := termWidth - centerOffset - boxWidth - 2
-	if remainingSpace > 0 {
-		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
-	}
-	fmt.Printf("%s\n", ColorReset)
-
-	// Content row with centering
-	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
-	fmt.Printf("%s║%s ", ColorBorder, ColorBg)
-
-	// Navigation instructions with color coding
-	fmt.Printf("%sNAVIGATION:%s ", ColorAccent, ColorText)
-
-	if currentPage > 0 {
-		fmt.Printf("%s<%s or %s←%s %sprev%s │ ", ColorSuccess, ColorText, ColorSuccess, ColorText, ColorTextDim, ColorText)
-	} else {
-		fmt.Printf("%s<%s or %s←%s %sprev%s │ ", ColorTextDim, ColorText, ColorTextDim, ColorText, ColorTextDim, ColorText)
-	}
-
-	if currentPage < totalPages-1 {
-		fmt.Printf("%s>%s or %s→%s %snext%s │ ", ColorSuccess, ColorText, ColorSuccess, ColorText, ColorTextDim, ColorText)
-	} else {
-		fmt.Printf("%s>%s or %s→%s %snext%s │ ", ColorTextDim, ColorText, ColorTextDim, ColorText, ColorTextDim, ColorText)
-	}
-
-	fmt.Printf("%sm%s %sMain Menu%s │ ", ColorAccent, ColorText, ColorTextDim, ColorText)
-	fmt.Printf("%sq%s %squit%s %s%s%s", ColorError, ColorText, ColorTextDim, ColorText, ColorAccent, pageInfo, ColorText)
-
-	// Calculate padding to fill the box
-	usedContentSpace := contentLength + 1 // +1 for space after "NAVIGATION:"
-	contentPadding := boxWidth - usedContentSpace
-	if contentPadding > 0 {
-		fmt.Printf("%s", strings.Repeat(" ", contentPadding))
-	}
-
-	fmt.Printf("%s║", ColorBorder)
-	if remainingSpace > 0 {
-		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
-	}
-	fmt.Printf("%s\n", ColorReset)
-
-	// Bottom border with centering
-	fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
-	fmt.Printf("%s╚%s╝", ColorBorder, strings.Repeat("═", boxWidth))
-	if remainingSpace > 0 {
-		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
-	}
-	fmt.Printf("%s\n", ColorReset)
-
-	// Fill final line to terminal width
-	fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", termWidth), ColorReset)
-}
-
-// getTerminalWidth returns the terminal width, defaulting to 120 if unable to detect
-func getTerminalWidth() int {
-	cmd := exec.Command("tput", "cols")
-	output, err := cmd.Output()
-	if err != nil {
-		return 120 // Default fallback
-	}
-
-	width, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil || width < 80 {
-		return 120 // Default fallback
-	}
-
-	// Ensure we don't exceed reasonable bounds
-	if width > 200 {
-		width = 200
-	}
-
-	return width
-}
-
-func printWelcomeScreenInteractive() string {
+// showFilterResults displays filtered results and allows selection
+func showFilterResults(sections []SectionResult) string {
 	for {
 		termWidth := getTerminalWidth()
 		fmt.Print(ColorClear)
 
-		// Fill entire screen with background color first
-		for i := 0; i < 30; i++ {
-			fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", termWidth), ColorReset)
+		// Title
+		titleText := "FILTERED STEEL SECTIONS"
+		titlePadding := 14
+		titleBoxWidth := len(titleText) + (titlePadding * 2)
+		if titleBoxWidth < 60 {
+			titleBoxWidth = 60
 		}
-
-		// Move cursor back to top
-		fmt.Print("\033[H")
-
-		// Title with accent color - properly centered
-		titleBoxWidth := 80
-		centerOffset := (termWidth - titleBoxWidth) / 2
+		if titleBoxWidth > termWidth-4 {
+			titleBoxWidth = termWidth - 4
+		}
+		centerOffset := (termWidth - titleBoxWidth - 2) / 2
 		if centerOffset < 0 {
 			centerOffset = 0
 		}
-
-		// Fill background before the title box
-		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
-		fmt.Printf("%s╔══════════════════════════════════════════════════════════════════════════════╗", ColorBorderBright)
-		// Fill background after the title box
-		remainingSpace := termWidth - centerOffset - titleBoxWidth
-		if remainingSpace > 0 {
-			fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
+		remainingSpace := termWidth - centerOffset - titleBoxWidth - 2
+		if remainingSpace < 0 {
+			remainingSpace = 0
 		}
-		fmt.Printf("%s\n", ColorReset)
 
 		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
-		fmt.Printf("%s║%s                              %sSTEEL TABLES VIEWER%s                                %s║",
-			ColorBorderBright, ColorBg, ColorAccent, ColorBg, ColorBorderBright)
-		if remainingSpace > 0 {
-			fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
-		}
-		fmt.Printf("%s\n", ColorReset)
+		fmt.Printf("%s╔%s╗", ColorBorderBright, strings.Repeat("═", titleBoxWidth))
+		fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+
+		textPadding := (titleBoxWidth - len(titleText)) / 2
+		leftPadding := textPadding
+		rightPadding := titleBoxWidth - len(titleText) - leftPadding
 
 		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
-		fmt.Printf("%s╚══════════════════════════════════════════════════════════════════════════════╝", ColorBorderBright)
-		if remainingSpace > 0 {
-			fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", remainingSpace))
+		fmt.Printf("%s║%s%s%s%s%s%s%s║",
+			ColorBorderBright, ColorBg, strings.Repeat(" ", leftPadding), ColorAccent, titleText, ColorBg, strings.Repeat(" ", rightPadding), ColorBorderBright)
+		fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+
+		fmt.Printf("%s%s", ColorBg, strings.Repeat(" ", centerOffset))
+		fmt.Printf("%s╚%s╝", ColorBorderBright, strings.Repeat("═", titleBoxWidth))
+		fmt.Printf("%s%s%s\n\n", ColorBg, strings.Repeat(" ", remainingSpace), ColorReset)
+
+		// Show filtered results
+		fmt.Printf("%s%s▶ FILTERED RESULTS (%d sections found):%s%s\n", ColorBg, ColorAccent, len(sections),
+			strings.Repeat(" ", termWidth-len(fmt.Sprintf("▶ FILTERED RESULTS (%d sections found):", len(sections)))), ColorReset)
+
+		// Group sections by table for better organization
+		tableGroups := make(map[string][]string)
+		for _, section := range sections {
+			tableGroups[section.TableName] = append(tableGroups[section.TableName], section.Section)
 		}
-		fmt.Printf("%s\n\n", ColorReset)
 
-		// Available files section with full width background
-		fmt.Printf("%s%s▶ AVAILABLE STEEL TABLES:%s%s\n", ColorBg, ColorAccent,
-			strings.Repeat(" ", termWidth-len("▶ AVAILABLE STEEL TABLES:")), ColorReset)
-		listJSONFilesStyledFullWidth()
+		i := 0
+		for tableName, sectionList := range tableGroups {
+			// Table header
+			tableHeader := fmt.Sprintf("  %s [%s]:", tableName, strings.Join(sectionList[:min(3, len(sectionList))], ", "))
+			if len(sectionList) > 3 {
+				tableHeader += fmt.Sprintf(" (+%d more)", len(sectionList)-3)
+			}
 
-		// Instructions with full width background
-		fmt.Printf("\n%s%s▶ INSTRUCTIONS:%s%s\n", ColorBg, ColorAccent,
-			strings.Repeat(" ", termWidth-len("▶ INSTRUCTIONS:")), ColorReset)
+			padding := termWidth - len(tableHeader)
+			if padding < 0 {
+				padding = 0
+			}
 
-		line1 := "  • Type the table name (e.g., PFC300, RHS450, UB350)"
+			if i%2 == 0 {
+				fmt.Printf("%s%s%s%s%s%s\n", ColorBg, ColorAccent, tableHeader,
+					strings.Repeat(" ", padding), ColorReset)
+			} else {
+				fmt.Printf("%s%s%s%s%s%s\n", ColorBg, ColorBlue, tableHeader,
+					strings.Repeat(" ", padding), ColorReset)
+			}
+
+			// Show sections in this table
+			for j, section := range sectionList {
+				sectionLine := fmt.Sprintf("    ● %s", section)
+				sectionPadding := termWidth - len(sectionLine)
+				if sectionPadding < 0 {
+					sectionPadding = 0
+				}
+
+				if j%2 == 0 {
+					fmt.Printf("%s%s    ● %s%s%s%s\n", ColorBg, ColorTextDim, ColorTextBright, section,
+						strings.Repeat(" ", sectionPadding), ColorReset)
+				} else {
+					fmt.Printf("%s%s    ● %s%s%s%s\n", ColorBg, ColorTextDim, ColorText, section,
+						strings.Repeat(" ", sectionPadding), ColorReset)
+				}
+			}
+			i++
+		}
+
+		// Instructions
+		fmt.Printf("\n%s%s▶ SELECT SECTION:%s%s\n", ColorBg, ColorAccent,
+			strings.Repeat(" ", termWidth-len("▶ SELECT SECTION:")), ColorReset)
+		line1 := "  • Type the section name to view its table (e.g., 310PFC)"
 		fmt.Printf("%s%s%s%s\n", ColorBg, line1,
 			strings.Repeat(" ", termWidth-len(line1)), ColorReset)
-
-		line2 := "  • Type q or quit to exit"
+		line2 := "  • Type 'b' or 'back' to return to main menu"
 		fmt.Printf("%s%s%s%s\n", ColorBg, line2,
 			strings.Repeat(" ", termWidth-len(line2)), ColorReset)
-
-		line3 := "  • Press Enter to confirm your selection"
+		line3 := "  • Type 'q' to quit"
 		fmt.Printf("%s%s%s%s\n\n", ColorBg, line3,
 			strings.Repeat(" ", termWidth-len(line3)), ColorReset)
 
-		// Input prompt with full width background
-		promptLine := "▶ SELECT TABLE: "
-		fmt.Printf("%s%s%s", ColorBg, ColorAccent, promptLine)
-		fmt.Printf("%s%s", ColorBg, ColorTextBright)
+		// Input prompt
+		fmt.Printf("%s▶ SELECT SECTION: %s", ColorAccent, ColorReset)
 
-		// Read user input
-		var input string
-		fmt.Scanln(&input)
-
-		// Reset colors and clear the input line
-		fmt.Print(ColorReset)
-
-		// Handle input
+		reader := bufio.NewReader(os.Stdin)
+		input, err := reader.ReadString('\n')
+		if err != nil {
+			return ""
+		}
 		input = strings.TrimSpace(strings.ToUpper(input))
 
 		if input == "Q" || input == "QUIT" || input == "EXIT" {
 			return ""
 		}
 
+		if input == "B" || input == "BACK" {
+			return ""
+		}
+
 		if input == "" {
-			continue // Empty input, show menu again
+			continue // Empty input, show results again
 		}
 
-		// Validate input against available files
-		if isValidTable(input) {
-			// Convert back to the proper filename format
-			filename := input + "_PROPS.json"
-			return filename
-		} else {
-			// Show error and continue loop with full width background
-			errorLine := fmt.Sprintf("✗ Table '%s' not found. Please try again...", input)
-			fmt.Printf("\n%s%s%s%s%s\n", ColorBg, ColorError, errorLine,
-				strings.Repeat(" ", termWidth-len(errorLine)), ColorReset)
-
-			continuePrompt := "Press Enter to continue..."
-			fmt.Printf("%s%s%s%s%s", ColorBg, ColorTextDim, continuePrompt,
-				strings.Repeat(" ", termWidth-len(continuePrompt)), ColorReset)
-			fmt.Scanln() // Wait for user to press Enter
-		}
-	}
-}
-
-func isValidTable(tableName string) bool {
-	files, err := os.ReadDir("data")
-	if err != nil {
-		return false
-	}
-
-	// Convert input to expected filename format (files are already uppercase)
-	expectedFilename := strings.ToUpper(tableName) + "_PROPS.json"
-
-	for _, file := range files {
-		// Files are already in the correct case, just compare directly
-		if file.Name() == expectedFilename {
-			return true
-		}
-	}
-	return false
-}
-
-// fillRemainingSpace fills any remaining vertical space with background color
-func fillRemainingSpace() {
-	termWidth := getTerminalWidth()
-	// Add a few empty lines with full background color to fill remaining space
-	for i := 0; i < 3; i++ {
-		fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", termWidth), ColorReset)
-	}
-}
-
-// filterAvailableColumns removes columns that have no meaningful data
-func filterAvailableColumns(allColumns []ColumnInfo, properties []SteelProperty) []ColumnInfo {
-	var availableColumns []ColumnInfo
-
-	for _, col := range allColumns {
-		hasData := false
-
-		// Check if any row has meaningful data for this column
-		for _, prop := range properties {
-			value := col.Formatter(prop)
-			// Consider various "empty" representations
-			if value != "-" && value != "" && value != "0" && value != "0.0" && value != "0.00" && value != "0.000" {
-				hasData = true
-				break
+		// Check if the selected section is in our filtered results
+		for _, section := range sections {
+			if strings.ToUpper(section.Section) == input || strings.Contains(strings.ToUpper(section.Section), input) {
+				return section.TableName + "_PROPS.json"
 			}
 		}
 
-		// Only include columns that have at least some meaningful data
-		if hasData {
-			availableColumns = append(availableColumns, col)
-		}
+		// If not found in filtered results, show error
+		fmt.Printf("\n%s✗ Section '%s' not found in filtered results. Please select from the list above...%s\n", ColorError, input, ColorReset)
+		fmt.Printf("%sPress Enter to continue...%s", ColorTextDim, ColorReset)
+		reader.ReadString('\n')
 	}
+}
 
-	return availableColumns
+// Helper function to get minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -37,15 +37,19 @@ type termios struct {
 	Ospeed uint32
 }
 
-func setRawMode() *termios {
+func setRawMode() error {
 	var oldState termios
-	syscall.Syscall(syscall.SYS_IOCTL, uintptr(0), uintptr(0x5401), uintptr(unsafe.Pointer(&oldState)))
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(0), uintptr(0x5401), uintptr(unsafe.Pointer(&oldState))); errno != 0 {
+		return errno
+	}
 
 	newState := oldState
 	newState.Lflag &^= 0x0000000A // Disable ECHO and ICANON
 
-	syscall.Syscall(syscall.SYS_IOCTL, uintptr(0), uintptr(0x5402), uintptr(unsafe.Pointer(&newState)))
-	return &oldState
+	if _, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(0), uintptr(0x5402), uintptr(unsafe.Pointer(&newState))); errno != 0 {
+		return errno
+	}
+	return nil
 }
 
 func restoreTerminal(oldState *termios) {
