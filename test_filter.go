@@ -21,10 +21,10 @@ type SectionResult struct {
 func main() {
 	query := "PFC"
 	fmt.Printf("Testing filter with query: %s\n", query)
-	
+
 	results := filterTables(query)
 	fmt.Printf("Found %d sections:\n", len(results))
-	
+
 	for i, result := range results {
 		if i >= 10 { // Show only first 10 for brevity
 			fmt.Printf("... and %d more\n", len(results)-10)
@@ -46,12 +46,12 @@ func filterTables(query string) []SectionResult {
 	}
 
 	var matchingSections []SectionResult
-	
+
 	for _, file := range files {
 		if strings.HasSuffix(file.Name(), ".json") {
 			filePath := filepath.Join("data", file.Name())
 			tableName := strings.TrimSuffix(file.Name(), "_PROPS.json")
-			
+
 			data, err := os.ReadFile(filePath)
 			if err != nil {
 				continue
@@ -64,7 +64,7 @@ func filterTables(query string) []SectionResult {
 
 			for _, prop := range properties {
 				sectionName := strings.ToUpper(prop.Section)
-				
+
 				for _, filter := range filters {
 					if filter != "" && strings.Contains(sectionName, filter) {
 						matchingSections = append(matchingSections, SectionResult{
@@ -78,6 +78,6 @@ func filterTables(query string) []SectionResult {
 			}
 		}
 	}
-	
+
 	return matchingSections
 }

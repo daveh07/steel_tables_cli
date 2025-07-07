@@ -39,10 +39,18 @@ cd /home/david/Desktop/Programming/Go/steel_tables
 - WB300, WB350, WC300, WC400
 
 ## Navigation Controls (Interactive Mode)
-- **Arrow Keys** or **< >**: Navigate between column pages
-- **m**: Return to main menu
+- **Type table name**: Direct access (e.g., "WC400", "UB350")
+- **f [filter]**: Filter steel sections (e.g., "f PFC+UB+UC")
+- **Arrow Keys** or **< >**: Navigate between column pages in table view
+- **m**: Return to main menu from table view
 - **q**: Quit application
-- **Enter**: Confirm table selection
+- **Enter**: Confirm selection
+
+## Filter Examples
+- `f PFC` - Shows all PFC sections (380x100PFC, 300x90PFC, etc.)
+- `f UB+UC` - Shows all UB and UC sections 
+- `f PFC+UB+UC` - Shows all PFC, UB, and UC sections
+- `f 200` - Shows all sections containing "200" in the name
 
 ## Files Installed
 - `steel_tables_viewer` - Main executable
