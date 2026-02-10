@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"steel_tables/internal/config"
 )
 
 // PrintWelcomeScreen displays the main menu and returns the selected table filename.
@@ -96,7 +98,7 @@ func printFullWidthLine(text, color string, termWidth int) {
 }
 
 func listJSONFiles(termWidth int) {
-	files, err := os.ReadDir("data")
+	files, err := os.ReadDir(config.DataDir())
 	if err != nil {
 		fmt.Printf("%s%s✗ Error reading data directory: %v%s\n", Bg, Error, err, Reset)
 		return
@@ -125,7 +127,7 @@ func listJSONFiles(termWidth int) {
 }
 
 func isValidTable(tableName string) bool {
-	files, err := os.ReadDir("data")
+	files, err := os.ReadDir(config.DataDir())
 	if err != nil {
 		return false
 	}

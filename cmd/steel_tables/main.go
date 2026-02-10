@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 
+	"steel_tables/internal/config"
 	"steel_tables/internal/ui"
 	"steel_tables/internal/viewer"
 )
@@ -40,7 +40,7 @@ func runInteractiveMode() {
 			return
 		}
 
-		filePath := filepath.Join("data", selectedFile)
+		filePath := config.DataFile(selectedFile)
 
 		if err := ui.SetRawMode(); err != nil {
 			log.Printf("Error entering raw mode: %v. Returning to menu.", err)
@@ -64,7 +64,7 @@ func runCLIMode(tableName string) {
 	if !strings.HasSuffix(filename, ".json") {
 		filename += ".json"
 	}
-	filePath := filepath.Join("data", filename)
+	filePath := config.DataFile(filename)
 
 	if _, err := os.Stat(filePath); os.IsNotExist(err) {
 		log.Fatalf("Table '%s' not found.", tableName)
