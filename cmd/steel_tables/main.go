@@ -40,14 +40,12 @@ func runInteractiveMode() {
 			return
 		}
 
-		filePath := config.DataFile(selectedFile)
-
 		if err := ui.SetRawMode(); err != nil {
 			log.Printf("Error entering raw mode: %v. Returning to menu.", err)
 			continue
 		}
 
-		returnToMenu := viewer.DisplayTable(filePath)
+		returnToMenu := viewer.DisplayTable(selectedFile)
 		ui.RestoreTerminal(initialState)
 
 		if !returnToMenu {
@@ -64,11 +62,10 @@ func runCLIMode(tableName string) {
 	if !strings.HasSuffix(filename, ".json") {
 		filename += ".json"
 	}
-	filePath := config.DataFile(filename)
 
-	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+	if !config.FileExists(filename) {
 		log.Fatalf("Table '%s' not found.", tableName)
 	}
 
-	viewer.PrintTableOnce(filePath)
+	viewer.PrintTableOnce(filename)
 }
