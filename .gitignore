@@ -1,0 +1,35 @@
+# Test files
+test.go
+test_filter.go
+
+# Build outputs
+main
+steel_tables
+steel_tables_viewer
+builds/
+
+# Scripts (not essential for running)
+build_all.sh
+package_distributions.sh
+*.bat
+*.command
+*.sh
+*.desktop
+steel-tables-launcher.sh
+Steel-Tables-Viewer.desktop
+
+# Documentation (optional - remove these lines if you want docs)
+# Code Citations.md
+DESKTOP_INSTALLATION.md
+DISTRIBUTION_SUMMARY.md
+README_DISTRIBUTION.md
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
