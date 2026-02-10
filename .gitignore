@@ -2,27 +2,31 @@
 test.go
 test_filter.go
 
-# Build outputs
-main
-steel_tables
-steel_tables_viewer
+# Build outputs (root level)
+/main
+/steel_tables
+/steel_tables_viewer
 builds/
+
+# Old monolithic source (now modularized)
+/main.go
+/terminal_unix.go
+/terminal_windows.go
 
 # Scripts (not essential for running)
 build_all.sh
 package_distributions.sh
 *.bat
 *.command
-*.sh
+run_steel_tables.sh
 *.desktop
 steel-tables-launcher.sh
-Steel-Tables-Viewer.desktop
 
-# Documentation (optional - remove these lines if you want docs)
-# Code Citations.md
+# Documentation (distribution-specific)
 DESKTOP_INSTALLATION.md
 DISTRIBUTION_SUMMARY.md
 README_DISTRIBUTION.md
+"# Code Citations.md"
 
 # IDE
 .idea/
