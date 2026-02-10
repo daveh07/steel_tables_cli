@@ -25,7 +25,7 @@ func getTerminalState() (*termios, error) {
 	return &state, nil
 }
 
-// Color constants for Tokyo Midnight theme
+// Color constants for TM theme
 const (
 	// Background colors
 	ColorReset   = "\033[0m"
@@ -233,7 +233,7 @@ func printTableOnce(filePath string) {
 
 	allColumns := getAllColumns()
 	availableColumns := filterAvailableColumns(allColumns, properties)
-	maxCols := 7
+	maxCols := getMaxCols()
 	totalPages := (len(availableColumns) + maxCols - 1) / maxCols
 
 	// Use the background color, but don't clear the whole screen like in interactive mode.
@@ -259,6 +259,7 @@ func printTableOnce(filePath string) {
 }
 
 // displayTable now correctly assumes it is ONLY called when in RAW mode.
+// It supports horizontal column paging and vertical row scrolling with fixed headers.
 func displayTable(filePath string) bool {
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -274,9 +275,19 @@ func displayTable(filePath string) bool {
 	availableColumns := filterAvailableColumns(allColumns, properties)
 
 	currentPage := 0
-	maxCols := 7
+	scrollRow := 0 // vertical scroll offset
 
 	for {
+		// Re-read terminal dimensions on every redraw (handles resize)
+		termHeight := getTerminalHeight()
+		maxCols := getMaxCols()
+
+		// Header takes 5 lines (box + blank), col headers 2, footer 3, so data gets the rest
+		visibleRows := termHeight - 10
+		if visibleRows < 3 {
+			visibleRows = 3
+		}
+
 		fmt.Print(ColorBg + ColorClear)
 
 		startCol := currentPage * maxCols
@@ -288,11 +299,37 @@ func displayTable(filePath string) bool {
 		currentColumns := availableColumns[startCol:endCol]
 		totalPages := (len(availableColumns) + maxCols - 1) / maxCols
 
+		// Clamp scroll offset
+		maxScroll := len(properties) - visibleRows
+		if maxScroll < 0 {
+			maxScroll = 0
+		}
+		if scrollRow > maxScroll {
+			scrollRow = maxScroll
+		}
+
+		// Determine visible slice of rows
+		endRow := scrollRow + visibleRows
+		if endRow > len(properties) {
+			endRow = len(properties)
+		}
+		visibleProperties := properties[scrollRow:endRow]
+
+		// Draw fixed header + column headers
 		drawHeader(filepath.Base(filePath), currentPage+1, totalPages, len(properties))
 		drawColumnHeaders(currentColumns)
-		drawDataRows(properties, currentColumns)
-		fillRemainingSpace()
-		drawNavigationFooter(currentPage, totalPages)
+
+		// Draw only the visible rows (with correct alternating colors based on original index)
+		drawDataRowsOffset(visibleProperties, currentColumns, scrollRow)
+
+		// Fill any remaining empty lines so the footer stays at the bottom
+		drawnRows := len(visibleProperties)
+		for i := drawnRows; i < visibleRows; i++ {
+			termWidth := getTerminalWidth()
+			fmt.Printf("%s%s%s\n", ColorBg, strings.Repeat(" ", termWidth), ColorReset)
+		}
+
+		drawNavigationFooter(currentPage, totalPages, scrollRow, endRow, len(properties))
 
 		// Read a single byte in raw mode
 		buffer := make([]byte, 128)
@@ -317,6 +354,14 @@ func displayTable(filePath string) bool {
 			}
 		case len(input) == 3 && input[0] == 27 && input[1] == 91: // Arrow keys
 			switch input[2] {
+			case 65: // Up
+				if scrollRow > 0 {
+					scrollRow--
+				}
+			case 66: // Down
+				if scrollRow < maxScroll {
+					scrollRow++
+				}
 			case 67: // Right
 				if endCol < len(availableColumns) {
 					currentPage++
@@ -324,6 +369,21 @@ func displayTable(filePath string) bool {
 			case 68: // Left
 				if currentPage > 0 {
 					currentPage--
+				}
+			}
+		case len(input) == 4 && input[0] == 27 && input[1] == 91: // Page Up/Down
+			switch input[3] {
+			case 126:
+				if input[2] == 53 { // Page Up
+					scrollRow -= visibleRows
+					if scrollRow < 0 {
+						scrollRow = 0
+					}
+				} else if input[2] == 54 { // Page Down
+					scrollRow += visibleRows
+					if scrollRow > maxScroll {
+						scrollRow = maxScroll
+					}
 				}
 			}
 		}
@@ -530,6 +590,32 @@ func getTerminalWidth() int {
 	return width
 }
 
+func getTerminalHeight() int {
+	cmd := exec.Command("tput", "lines")
+	cmd.Stdin = os.Stdin
+	output, err := cmd.Output()
+	if err != nil {
+		return 40 // Default fallback
+	}
+	height, err := strconv.Atoi(strings.TrimSpace(string(output)))
+	if err != nil || height < 10 {
+		return 40 // Default fallback
+	}
+	return height
+}
+
+// getMaxCols computes how many data columns fit in the terminal width.
+func getMaxCols() int {
+	termWidth := getTerminalWidth()
+	sectionColWidth := 25
+	colWidth := 18
+	maxCols := (termWidth - sectionColWidth) / colWidth
+	if maxCols < 1 {
+		maxCols = 1
+	}
+	return maxCols
+}
+
 func drawHeader(filename string, currentPage, totalPages, totalEntries int) {
 	termWidth := getTerminalWidth()
 	titleText := fmt.Sprintf("STEEL PROPERTIES: %s", strings.ToUpper(strings.TrimSuffix(filename, ".json")))
@@ -630,9 +716,15 @@ func getColumnHeaderWithUnit(columnName string) string {
 }
 
 func drawDataRows(properties []SteelProperty, currentColumns []ColumnInfo) {
+	drawDataRowsOffset(properties, currentColumns, 0)
+}
+
+// drawDataRowsOffset draws data rows with a base offset for correct alternating row colors.
+func drawDataRowsOffset(properties []SteelProperty, currentColumns []ColumnInfo, baseIndex int) {
 	termWidth := getTerminalWidth()
 	for i, prop := range properties {
-		if i%2 == 0 {
+		globalIndex := baseIndex + i
+		if globalIndex%2 == 0 {
 			fmt.Printf("%s", ColorBg)
 		} else {
 			fmt.Printf("%s", ColorBgLight)
@@ -664,28 +756,47 @@ func fillRemainingSpace() {
 	// but the current drawing logic handles it row by row.
 }
 
-func drawNavigationFooter(currentPage, totalPages int) {
+func drawNavigationFooter(currentPage, totalPages, startRow, endRow, totalRows int) {
 	termWidth := getTerminalWidth()
 
+	// Row info line
+	rowInfo := fmt.Sprintf("Rows %d–%d of %d", startRow+1, endRow, totalRows)
+	rowInfoColored := fmt.Sprintf("%sRows %s%d–%d%s of %s%d%s",
+		ColorTextDim, ColorAccent, startRow+1, endRow, ColorTextDim, ColorAccent, totalRows, ColorTextDim)
+	rowPadding := (termWidth - len(rowInfo)) / 2
+	if rowPadding < 0 {
+		rowPadding = 0
+	}
+	rowRightPad := termWidth - len(rowInfo) - rowPadding
+	if rowRightPad < 0 {
+		rowRightPad = 0
+	}
+	fmt.Printf("%s%s%s%s%s\n",
+		ColorBg, strings.Repeat(" ", rowPadding), rowInfoColored, strings.Repeat(" ", rowRightPad), ColorReset)
+
 	// Build the footer with colored text
-	footerText := fmt.Sprintf("  %s<%s %s>%s or %s←%s %s→%s to navigate pages  |  %sm%s for menu  |  %sq%s to %squit%s  ",
-		ColorAccent, ColorText, // <
-		ColorAccent, ColorText, // >
+	footerText := fmt.Sprintf("  %s←%s %s→%s pages  |  %s↑%s %s↓%s scroll  |  %sPgUp/PgDn%s jump  |  %sm%s menu  |  %sq%s quit  ",
 		ColorAccent, ColorText, // ←
 		ColorAccent, ColorText, // →
+		ColorAccent, ColorText, // ↑
+		ColorAccent, ColorText, // ↓
+		ColorAccent, ColorText, // PgUp/PgDn
 		ColorAccent, ColorText, // m
-		ColorError, ColorText, // q
-		ColorError, ColorText) // quit
+		ColorError, ColorText) // q
 
 	// Calculate plain text length for centering (without color codes)
-	plainText := "  < > or ← → to navigate pages  |  m for menu  |  q to quit  "
+	plainText := "  ← → pages  |  ↑ ↓ scroll  |  PgUp/PgDn jump  |  m menu  |  q quit  "
 	padding := (termWidth - len(plainText)) / 2
 	if padding < 0 {
 		padding = 0
 	}
+	rightPad := termWidth - len(plainText) - padding
+	if rightPad < 0 {
+		rightPad = 0
+	}
 
-	fmt.Printf("\n%s%s%s%s%s\n",
-		ColorBg, strings.Repeat(" ", padding), footerText, ColorBg, strings.Repeat(" ", termWidth-len(plainText)-padding))
+	fmt.Printf("%s%s%s%s%s\n",
+		ColorBg, strings.Repeat(" ", padding), footerText, strings.Repeat(" ", rightPad), ColorReset)
 }
 
 func filterAvailableColumns(allColumns []ColumnInfo, properties []SteelProperty) []ColumnInfo {
