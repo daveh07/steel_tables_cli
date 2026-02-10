@@ -1,21 +1,42 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
-  <!-- Background -->
-  <rect width="128" height="128" rx="16" fill="#1a1b26"/>
+  <!-- Dark background -->
+  <rect width="128" height="128" fill="#1a1b26"/>
   
-  <!-- Steel I-Beam (main structural element) -->
-  <g transform="translate(32, 24)">
+  <!-- Main I-Beam section (technical drawing style) -->
+  <g transform="translate(24, 20)">
     <!-- Top flange -->
-    <rect x="0" y="0" width="64" height="12" fill="#7aa2f7" rx="2"/>
-    <!-- Web -->
-    <rect x="24" y="12" width="16" height="56" fill="#7da2ce"/>
-    <!-- Bottom flange -->
-    <rect x="0" y="68" width="64" height="12" fill="#7aa2f7" rx="2"/>
+    <rect x="0" y="0" width="80" height="14" fill="#7aa2f7"/>
+    <rect x="2" y="2" width="76" height="3" fill="#89ddff" opacity="0.5"/>
     
-    <!-- Highlight on top flange -->
-    <rect x="2" y="2" width="60" height="4" fill="#89b4fa" rx="1" opacity="0.6"/>
+    <!-- Web -->
+    <rect x="32" y="14" width="16" height="60" fill="#7da2ce"/>
+    <line x1="34" y1="14" x2="34" y2="74" stroke="#89ddff" stroke-width="1" opacity="0.4"/>
+    
+    <!-- Bottom flange -->
+    <rect x="0" y="74" width="80" height="14" fill="#7aa2f7"/>
+    <rect x="2" y="85" width="76" height="3" fill="#89ddff" opacity="0.3"/>
   </g>
   
-  <!-- Bottom accent bar -->
-  <rect x="16" y="104" width="96" height="8" fill="#6fecce" rx="4" opacity="0.8"/>
+  <!-- Property labels (engineering style) -->
+  <g font-family="monospace" font-size="11" fill="#6fecce" font-weight="600">
+    <!-- bf (flange width) -->
+    <text x="10" y="30" opacity="0.9">bf</text>
+    <line x1="24" y1="26" x2="104" y2="26" stroke="#6fecce" stroke-width="1.5" opacity="0.7"/>
+    
+    <!-- d (depth) -->
+    <text x="112" y="68" opacity="0.9">d</text>
+    <line x1="108" y1="34" x2="108" y2="102" stroke="#6fecce" stroke-width="1.5" opacity="0.7"/>
+    
+    <!-- tw (web thickness) -->
+    <text x="32" y="116" opacity="0.9">tw</text>
+    <line x1="56" y1="112" x2="72" y2="112" stroke="#6fecce" stroke-width="1.5" opacity="0.7"/>
+  </g>
+  
+  <!-- Corner markers (technical drawing style) -->
+  <line x1="10" y1="10" x2="18" y2="10" stroke="#66e8ec" stroke-width="2"/>
+  <line x1="10" y1="10" x2="10" y2="18" stroke="#66e8ec" stroke-width="2"/>
+  
+  <line x1="118" y1="10" x2="110" y2="10" stroke="#66e8ec" stroke-width="2"/>
+  <line x1="118" y1="10" x2="118" y2="18" stroke="#66e8ec" stroke-width="2"/>
 </svg>
