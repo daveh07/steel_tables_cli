@@ -703,8 +703,8 @@ func drawColumnHeaders(currentColumns []ColumnInfo) {
 func getColumnHeaderWithUnit(columnName string) string {
 	unitMap := map[string]string{
 		"Weight": "kg/m", "d": "mm", "bf": "mm", "tf": "mm", "tw": "mm", "r1": "mm", "d1": "mm",
-		"tw__1": "mm", "tf__1": "mm", "Ag": "mm²", "Ix": "10³mm⁴", "Zx": "10³mm³", "Sx": "10³mm³",
-		"rx": "mm", "Iy": "10³mm⁴", "Zy": "mm³", "Sy": "mm³", "ry": "mm", "J": "mm⁴", "Iw": "mm⁶",
+		"tw__1": "mm", "tf__1": "mm", "Ag": "mm²", "Ix": "10⁶mm⁴", "Zx": "10³mm³", "Sx": "10³mm³",
+		"rx": "mm", "Iy": "10⁶mm⁴", "Zy": "mm³", "Sy": "mm³", "ry": "mm", "J": "10³mm⁴", "Iw": "mm⁶",
 		"flange": "mm", "web": "mm", "Zex": "mm³", "Zey": "mm³", "Zy5": "mm³", "Fu": "MPa", "r2": "mm",
 		"ZeyD": "mm³", "In": "10³mm⁴", "Ip": "10³mm⁴", "ZexC": "mm³", "x5": "mm", "y5": "mm", "nL": "mm",
 		"pB": "mm", "pT": "mm",
