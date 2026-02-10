@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="128" height="128" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="128" height="128" rx="16" fill="#1a1b26"/>
+  
+  <!-- Steel I-Beam (main structural element) -->
+  <g transform="translate(32, 24)">
+    <!-- Top flange -->
+    <rect x="0" y="0" width="64" height="12" fill="#7aa2f7" rx="2"/>
+    <!-- Web -->
+    <rect x="24" y="12" width="16" height="56" fill="#7da2ce"/>
+    <!-- Bottom flange -->
+    <rect x="0" y="68" width="64" height="12" fill="#7aa2f7" rx="2"/>
+    
+    <!-- Highlight on top flange -->
+    <rect x="2" y="2" width="60" height="4" fill="#89b4fa" rx="1" opacity="0.6"/>
+    
+    <!-- Table grid overlay -->
+    <g transform="translate(8, 24)" opacity="0.9">
+      <!-- Horizontal lines -->
+      <line x1="0" y1="8" x2="48" y2="8" stroke="#6fecce" stroke-width="2" stroke-linecap="round"/>
+      <line x1="0" y1="18" x2="48" y2="18" stroke="#6fecce" stroke-width="2" stroke-linecap="round"/>
+      <line x1="0" y1="28" x2="48" y2="28" stroke="#6fecce" stroke-width="2" stroke-linecap="round"/>
+      
+      <!-- Vertical lines -->
+      <line x1="12" y1="0" x2="12" y2="36" stroke="#6fecce" stroke-width="2" stroke-linecap="round"/>
+      <line x1="24" y1="0" x2="24" y2="36" stroke="#6fecce" stroke-width="2" stroke-linecap="round"/>
+      <line x1="36" y1="0" x2="36" y2="36" stroke="#6fecce" stroke-width="2" stroke-linecap="round"/>
+    </g>
+  </g>
+  
+  <!-- Bottom accent bar -->
+  <rect x="16" y="104" width="96" height="8" fill="#6fecce" rx="4" opacity="0.8"/>
+  
+  <!-- Corner accent -->
+  <circle cx="106" cy="22" r="6" fill="#66e8ec" opacity="0.7"/>
+</svg>
