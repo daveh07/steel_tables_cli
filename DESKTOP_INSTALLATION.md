@@ -15,13 +15,13 @@ The Steel Tables Viewer has been successfully installed and is ready to use.
 
 ### Method 2: Terminal (Interactive Mode)
 ```bash
-cd /home/david/Desktop/Programming/Go/steel_tables
+cd to 'Working directory' 
 ./steel_tables_viewer
 ```
 
 ### Method 3: Terminal (Command Line Mode)
 ```bash
-cd /home/david/Desktop/Programming/Go/steel_tables
+cd to 'Working directory' 
 ./steel_tables_viewer WC400
 ./steel_tables_viewer UB350
 ./steel_tables_viewer PFC300
