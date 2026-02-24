@@ -9,7 +9,6 @@ A terminal-based viewer for Australian structural steel section properties (AS/N
 - **Interactive navigation** — Arrow keys to scroll, page through columns
 - **Responsive display** — Adapts to terminal size, fixed headers while scrolling
 - **Multiple section types** — UB, UC, WB, WC, PFC, RHS, SHS, CHS, EA, UA tables
-- **Clean UI** — Tokyo Midnight color theme, alternating row colors
 
 ## Installation
 
